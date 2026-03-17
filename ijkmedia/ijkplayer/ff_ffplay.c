@@ -1315,7 +1315,7 @@ static void fs_fill_dovi_info(const AVFrame *frame, FSDOVIFrameInfo *out_info)
         const AVDOVIReshapingCurve *src_curve = &mapping->curves[c];
         FSDOVIReshapeComp *dst_curve = &params->comp[c];
 
-        dst_curve->num_pivots = src_curve->num_pivots;
+        dst_curve->num_pivots = FFMIN(src_curve->num_pivots, FS_DOVI_MAX_PIECES + 1);
         int pivot_count = FFMIN(src_curve->num_pivots, FS_DOVI_MAX_PIECES + 1);
         for (int i = 0; i < pivot_count; i++) {
             dst_curve->pivots[i] = src_curve->pivots[i] / signal_scale;

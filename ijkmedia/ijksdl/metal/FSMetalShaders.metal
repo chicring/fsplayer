@@ -393,7 +393,8 @@ float3 dovi_decode(float3 ipt, device const FSDOVIParams *dovi)
     nonlinear += float3(dovi->nonlinear_offset[0], dovi->nonlinear_offset[1], dovi->nonlinear_offset[2]);
     float3 linearized = st_2084_eotf_vec(nonlinear);
     float3 hpe_lms = dovi_mul_mat3(dovi->linear_matrix, linearized);
-    // Dolby Vision color metadata outputs BT.2020-referred HPE LMS.
+    // Dolby Vision metadata outputs BT.2020-referred HPE LMS; this applies the fixed
+    // HPE LMS -> BT.2020 linear RGB matrix (see BT.2124 / Dolby ICtCp pipeline).
     return float3(
                   3.06441879 * hpe_lms.x + -2.16597676 * hpe_lms.y + 0.10155818 * hpe_lms.z,
                  -0.65612108 * hpe_lms.x +  1.78554118 * hpe_lms.y + -0.12943749 * hpe_lms.z,

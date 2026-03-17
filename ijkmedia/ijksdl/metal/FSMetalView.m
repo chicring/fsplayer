@@ -54,6 +54,9 @@ static FSDOVIFrameInfo fs_read_dovi_info(FSOverlayAttach *attach)
     FSDOVIFrameInfo info;
     memset(&info, 0, sizeof(info));
     NSData *data = attach.doviInfoData;
+    if (data.length > 0 && data.length != sizeof(FSDOVIFrameInfo)) {
+        NSLog(@"DOVI: info size mismatch, got %lu expected %zu", (unsigned long)data.length, sizeof(FSDOVIFrameInfo));
+    }
     if (data.length == sizeof(FSDOVIFrameInfo)) {
         memcpy(&info, data.bytes, sizeof(FSDOVIFrameInfo));
     }
