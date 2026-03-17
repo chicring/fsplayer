@@ -351,8 +351,66 @@ float3 hdr2sdr(float3 rgb_2020,float x,float hdrPercentage,FSColorTransferFunc t
     }
 }
 
+float3 dovi_mul_mat3(device const float *m, float3 v)
+{
+    return float3(
+                  m[0] * v.x + m[1] * v.y + m[2] * v.z,
+                  m[3] * v.x + m[4] * v.y + m[5] * v.z,
+                  m[6] * v.x + m[7] * v.y + m[8] * v.z
+                  );
+}
+
+int dovi_find_segment(float x, device const FSDOVIReshapeComp *comp)
+{
+    int numPieces = max(comp->num_pivots - 1, 1);
+    numPieces = min(numPieces, FS_DOVI_MAX_PIECES);
+    for (int i = 0; i < numPieces - 1; i++) {
+        if (x < comp->pivots[i + 1]) {
+            return i;
+        }
+    }
+    return numPieces - 1;
+}
+
+float dovi_reshape_component(float x, device const FSDOVIReshapeComp *comp)
+{
+    int seg = dovi_find_segment(x, comp);
+    float c0 = comp->poly_coef[seg][0];
+    float c1 = comp->poly_coef[seg][1];
+    float c2 = comp->poly_coef[seg][2];
+    return (c2 * x + c1) * x + c0;
+}
+
+float3 dovi_decode(float3 ipt, device const FSDOVIParams *dovi)
+{
+    float3 reshaped = float3(
+                             dovi_reshape_component(ipt.x, &dovi->comp[0]),
+                             dovi_reshape_component(ipt.y, &dovi->comp[1]),
+                             dovi_reshape_component(ipt.z, &dovi->comp[2])
+                             );
+    float3 nonlinear = dovi_mul_mat3(dovi->nonlinear_matrix, reshaped);
+    nonlinear += float3(dovi->nonlinear_offset[0], dovi->nonlinear_offset[1], dovi->nonlinear_offset[2]);
+    float3 linearized = st_2084_eotf_vec(nonlinear);
+    return dovi_mul_mat3(dovi->linear_matrix, linearized);
+}
+
+float3 dovi_linear_bt2020_to_sdr(float3 linear_rgb_2020, float x, float hdrPercentage)
+{
+    if (x > 0 && x <= hdrPercentage) {
+        float3 sdr_linear = linear_rgb_2020 * RGB2020_TO_RGB709;
+        sdr_linear = tonemap(sdr_linear);
+        return rec_1886_inverse_eotf_vec(sdr_linear);
+    }
+    return linear_rgb_2020;
+}
+
 float4 yuv2rgb(float3 yuv,device FSConvertMatrix* convertMatrix,float x)
 {
+    if (convertMatrix->dovi.enabled > 0) {
+        float3 linear_rgb_2020 = dovi_decode(yuv, &convertMatrix->dovi);
+        float3 outRgb = dovi_linear_bt2020_to_sdr(linear_rgb_2020, x, convertMatrix->hdrPercentage);
+        return float4(rgb_adjust(outRgb,convertMatrix->adjustment),1.0);
+    }
     //先把 [0.0,1.0] 范围的YUV 处理为 [0.0,1.0] 范围的RGB
     float3 rgb = convertMatrix->colorMatrix * (yuv + convertMatrix->offset);
     //HDR 转 SDR
@@ -384,6 +442,18 @@ fragment float4 nv12FragmentShader(RasterizerData input [[stage_in]],
     return yuv2rgb(yuv,fragmentShaderArgs.convertMatrix,input.textureCoordinate.x);
 }
 
+fragment float4 doviNv12FragmentShader(RasterizerData input [[stage_in]],
+                                       device FSFragmentShaderArguments & fragmentShaderArgs [[ buffer(FSFragmentBufferLocation0) ]])
+{
+    constexpr sampler textureSampler (mag_filter::linear,
+                                      min_filter::linear);
+    texture2d<float> textureY = fragmentShaderArgs.textureY;
+    texture2d<float> textureUV = fragmentShaderArgs.textureU;
+    float3 ipt = float3(textureY.sample(textureSampler, input.textureCoordinate).r,
+                        textureUV.sample(textureSampler, input.textureCoordinate).rg);
+    return yuv2rgb(ipt,fragmentShaderArgs.convertMatrix,input.textureCoordinate.x);
+}
+
 /// @brief yuv420p fragment shader
 /// @param stage_in表示这个数据来自光栅化。（光栅化是顶点处理之后的步骤，业务层无法修改）
 /// @param texture表明是纹理数据，FSFragmentTextureIndexTextureY/U/V 是索引
@@ -403,6 +473,20 @@ fragment float4 yuv420pFragmentShader(RasterizerData input [[stage_in]],
                         textureV.sample(textureSampler, input.textureCoordinate).r);
     
     return yuv2rgb(yuv,fragmentShaderArgs.convertMatrix,input.textureCoordinate.x);
+}
+
+fragment float4 doviYuv420pFragmentShader(RasterizerData input [[stage_in]],
+                                          device FSFragmentShaderArguments & fragmentShaderArgs [[ buffer(FSFragmentBufferLocation0) ]])
+{
+    constexpr sampler textureSampler (mag_filter::linear,
+                                      min_filter::linear);
+    texture2d<float> textureY = fragmentShaderArgs.textureY;
+    texture2d<float> textureU = fragmentShaderArgs.textureU;
+    texture2d<float> textureV = fragmentShaderArgs.textureV;
+    float3 ipt = float3(textureY.sample(textureSampler, input.textureCoordinate).r,
+                        textureU.sample(textureSampler, input.textureCoordinate).r,
+                        textureV.sample(textureSampler, input.textureCoordinate).r);
+    return yuv2rgb(ipt,fragmentShaderArgs.convertMatrix,input.textureCoordinate.x);
 }
 
 /// @brief uyvy422 fragment shader

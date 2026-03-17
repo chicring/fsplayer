@@ -7,6 +7,7 @@
 //
 
 #import <simd/simd.h>
+#include "../ijksdl_dovi.h"
 
 typedef enum FSYUV2RGBColorMatrixType
 {
@@ -54,6 +55,7 @@ typedef struct {
     FSColorTransferFunc transferFun;
     float hdrPercentage;
     int hdr;
+    FSDOVIParams dovi;
 } FSConvertMatrix;
 
 typedef enum FSFragmentBufferArguments

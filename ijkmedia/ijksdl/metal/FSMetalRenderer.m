@@ -10,12 +10,14 @@
 #import "FSMathUtilities.h"
 #import "FSMetalPipelineMeta.h"
 #include "../ijksdl_log.h"
+#include <string.h>
 
 @interface FSMetalRenderer()
 {
     vector_float4 _colorAdjustment;
     id<MTLDevice> _device;
     MTLPixelFormat _colorPixelFormat;
+    FSDOVIFrameInfo _doviInfo;
 }
 
 // The render pipeline generated from the vertex and fragment shaders in the .metal shader file.
@@ -44,6 +46,7 @@
         _colorPixelFormat = colorPixelFormat;
         _colorAdjustment = (vector_float4){0.0};
         _hdrPercentage = 0.0;
+        memset(&_doviInfo, 0, sizeof(_doviInfo));
     }
     return self;
 }
@@ -53,19 +56,19 @@
     return self.pipelineMeta.hdr;
 }
 
-- (BOOL)matchPixelBuffer:(CVPixelBufferRef)pixelBuffer
+- (BOOL)matchPixelBuffer:(CVPixelBufferRef)pixelBuffer doviInfo:(const FSDOVIFrameInfo *)doviInfo
 {
-    return [self.pipelineMeta metaMatchedCVPixelbuffer:pixelBuffer];
+    return [self.pipelineMeta metaMatchedCVPixelbuffer:pixelBuffer doviInfo:doviInfo];
 }
 
-- (BOOL)createRenderPipelineIfNeed:(CVPixelBufferRef)pixelBuffer blend:(BOOL)blend
+- (BOOL)createRenderPipelineIfNeed:(CVPixelBufferRef)pixelBuffer doviInfo:(const FSDOVIFrameInfo *)doviInfo blend:(BOOL)blend
 {
     if (self.renderPipeline) {
         return YES;
     }
     
     if (!self.pipelineMeta) {
-        self.pipelineMeta = [FSMetalPipelineMeta createWithCVPixelbuffer:pixelBuffer];
+        self.pipelineMeta = [FSMetalPipelineMeta createWithCVPixelbuffer:pixelBuffer doviInfo:doviInfo];
     }
     
     if (!self.pipelineMeta) {
@@ -126,6 +129,19 @@
     self.argumentEncoder = argumentEncoder;
     self.renderPipeline = pipelineState;
     return YES;
+}
+
+- (void)updateDoviInfo:(const FSDOVIFrameInfo *)doviInfo
+{
+    FSDOVIFrameInfo info;
+    memset(&info, 0, sizeof(info));
+    if (doviInfo) {
+        info = *doviInfo;
+    }
+    if (memcmp(&_doviInfo, &info, sizeof(info)) != 0) {
+        _doviInfo = info;
+        self.convertMatrixChanged = YES;
+    }
 }
 
 - (void)setVertexRatio:(CGSize)vertexRatio
@@ -273,6 +289,7 @@
         convertMatrix.transferFun = self.pipelineMeta.transferFunc;
         convertMatrix.hdrPercentage = self.hdrPercentage;
         convertMatrix.hdr = self.pipelineMeta.hdr;
+        convertMatrix.dovi = _doviInfo.reshape_params;
         self.convertMatrixBuff = [_device newBufferWithBytes:&convertMatrix
                                                       length:sizeof(FSConvertMatrix)
                                                      options:MTLResourceStorageModeShared];

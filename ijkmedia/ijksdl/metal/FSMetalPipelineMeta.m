@@ -11,18 +11,22 @@
 
 @implementation FSMetalPipelineMeta
 
-+ (FSMetalPipelineMeta *)createWithCVPixelbuffer:(CVPixelBufferRef)pixelBuffer
++ (FSMetalPipelineMeta *)createWithCVPixelbuffer:(CVPixelBufferRef)pixelBuffer doviInfo:(const FSDOVIFrameInfo *)doviInfo
 {
     NSString* shaderName;
     
+    BOOL doviReshapeEnabled = NO;
     BOOL needConvertColor = YES;
+    if (doviInfo && doviInfo->reshape_params.enabled && doviInfo->is_software_decode && doviInfo->dovi_profile == 5) {
+        doviReshapeEnabled = YES;
+    }
     int plane = CVPixelBufferIsPlanar(pixelBuffer) ? (int)CVPixelBufferGetPlaneCount(pixelBuffer) : 1;
     if (plane == 3) {
         /*
          cv_format == kCVPixelFormatType_420YpCbCr8Planar ||
          cv_format == kCVPixelFormatType_420YpCbCr8PlanarFullRange
          */
-        shaderName = @"yuv420pFragmentShader";
+        shaderName = doviReshapeEnabled ? @"doviYuv420pFragmentShader" : @"yuv420pFragmentShader";
     } else if (plane == 2) {
         /*
          cv_format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
@@ -36,7 +40,7 @@
          cv_format == kCVPixelFormatType_422YpCbCr16BiPlanarVideoRange||
          cv_format == kCVPixelFormatType_444YpCbCr16BiPlanarVideoRange
          */
-        shaderName = @"nv12FragmentShader";
+        shaderName = doviReshapeEnabled ? @"doviNv12FragmentShader" : @"nv12FragmentShader";
     } else if (plane == 1) {
         OSType cv_format = CVPixelBufferGetPixelFormatType(pixelBuffer);
         if (cv_format == kCVPixelFormatType_32BGRA) {
@@ -98,6 +102,7 @@
     meta.fragmentName = shaderName;
     meta.fullRange = fullRange;
     meta.convertMatrixType = colorMatrixType;
+    meta.doviReshapeEnabled = doviReshapeEnabled;
     //HDR color space.
     if (colorMatrixType == FSYUV2RGBColorMatrixBT2020) {
         meta.hdr = YES;
@@ -126,15 +131,15 @@
     NSString *matrix = [@[@"None",@"BT601",@"BT709",@"BT2020"] objectAtIndex:self.convertMatrixType];
     if (self.hdr) {
         NSString *tf = [@[@"LINEAR",@"PQ",@"HLG"] objectAtIndex:self.transferFunc];
-        return [NSString stringWithFormat:@"%@,hdr:%d,fullRange:%d,matrix:%@,transfer:%@",self.fragmentName,self.hdr,self.fullRange,matrix,tf];
+        return [NSString stringWithFormat:@"%@,hdr:%d,fullRange:%d,matrix:%@,transfer:%@,doviReshape:%d",self.fragmentName,self.hdr,self.fullRange,matrix,tf,self.doviReshapeEnabled];
     } else {
-        return [NSString stringWithFormat:@"%@,fullRange:%d,matrix:%@",self.fragmentName,self.fullRange,matrix];
+        return [NSString stringWithFormat:@"%@,fullRange:%d,matrix:%@,doviReshape:%d",self.fragmentName,self.fullRange,matrix,self.doviReshapeEnabled];
     }
 }
 
-- (BOOL)metaMatchedCVPixelbuffer:(CVPixelBufferRef)pixelBuffer
+- (BOOL)metaMatchedCVPixelbuffer:(CVPixelBufferRef)pixelBuffer doviInfo:(const FSDOVIFrameInfo *)doviInfo
 {
-    return [self isEqualTo:[FSMetalPipelineMeta createWithCVPixelbuffer:pixelBuffer]];
+    return [self isEqualTo:[FSMetalPipelineMeta createWithCVPixelbuffer:pixelBuffer doviInfo:doviInfo]];
 }
 
 - (BOOL)isEqualTo:(id)object
@@ -156,6 +161,9 @@
         return NO;
     }
     if (self.convertMatrixType != meta.convertMatrixType) {
+        return NO;
+    }
+    if (self.doviReshapeEnabled != meta.doviReshapeEnabled) {
         return NO;
     }
     return YES;

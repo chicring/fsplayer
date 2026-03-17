@@ -11,6 +11,7 @@
 #import <AVFoundation/AVUtilities.h>
 #import <CoreImage/CIContext.h>
 #import <mach/mach_time.h>
+#include <string.h>
 
 // Header shared between C code here, which executes Metal API commands, and .metal files, which
 // uses these types as inputs to the shaders.
@@ -47,6 +48,17 @@ typedef CGRect NSRect;
 @end
 
 @implementation FSMetalView
+
+static FSDOVIFrameInfo fs_read_dovi_info(FSOverlayAttach *attach)
+{
+    FSDOVIFrameInfo info;
+    memset(&info, 0, sizeof(info));
+    NSData *data = attach.doviInfoData;
+    if (data.length == sizeof(FSDOVIFrameInfo)) {
+        memcpy(&info, data.bytes, sizeof(FSDOVIFrameInfo));
+    }
+    return info;
+}
 
 @synthesize scalingMode = _scalingMode;
 // rotate preference
@@ -230,21 +242,23 @@ typedef CGRect NSRect;
     return subPipeline != nil;
 }
 
-- (BOOL)setupPipelineIfNeed:(CVPixelBufferRef)pixelBuffer blend:(BOOL)blend
+- (BOOL)setupPipelineIfNeed:(FSOverlayAttach *)attach blend:(BOOL)blend
 {
+    CVPixelBufferRef pixelBuffer = attach.videoPicture;
     if (!pixelBuffer) {
         return NO;
     }
+    FSDOVIFrameInfo doviInfo = fs_read_dovi_info(attach);
     
     if (self.picturePipeline) {
-        if ([self.picturePipeline matchPixelBuffer:pixelBuffer]) {
+        if ([self.picturePipeline matchPixelBuffer:pixelBuffer doviInfo:&doviInfo]) {
             return YES;
         }
         ALOGI("pixel format not match,need rebuild pipeline");
     }
     
     FSMetalRenderer *picturePipeline = [[FSMetalRenderer alloc] initWithDevice:self.device colorPixelFormat:self.colorPixelFormat];
-    BOOL created = [picturePipeline createRenderPipelineIfNeed:pixelBuffer blend:blend];
+    BOOL created = [picturePipeline createRenderPipelineIfNeed:pixelBuffer doviInfo:&doviInfo blend:blend];
     
     if (!created) {
         ALOGI("create RenderPipeline failed.");
@@ -269,6 +283,8 @@ typedef CGRect NSRect;
     self.picturePipeline.autoZRotateDegrees = attach.autoZRotate;
     self.picturePipeline.rotateType = self.rotatePreference.type;
     self.picturePipeline.rotateDegrees = self.rotatePreference.degrees;
+    FSDOVIFrameInfo doviInfo = fs_read_dovi_info(attach);
+    [self.picturePipeline updateDoviInfo:&doviInfo];
     
     bool applyAdjust = _colorPreference.brightness != 1.0 || _colorPreference.saturation != 1.0 || _colorPreference.contrast != 1.0;
     [self.picturePipeline updateColorAdjustment:(vector_float4){_colorPreference.brightness,_colorPreference.saturation,_colorPreference.contrast,applyAdjust ? 1.0 : 0.0}];
@@ -352,7 +368,7 @@ typedef CGRect NSRect;
         return;
     }
     
-    if (![self setupPipelineIfNeed:attach.videoPicture blend:attach.hasAlpha]) {
+    if (![self setupPipelineIfNeed:attach blend:attach.hasAlpha]) {
         return;
     }
     
@@ -468,7 +484,7 @@ typedef CGRect NSRect;
     
     CGSize viewport = CGSizeMake(floorf(width), floorf(height));
     
-    if (![self setupPipelineIfNeed:attach.videoPicture blend:attach.hasAlpha]) {
+    if (![self setupPipelineIfNeed:attach blend:attach.hasAlpha]) {
         return NULL;
     }
     
@@ -528,7 +544,7 @@ typedef CGRect NSRect;
     
     id<MTLCommandBuffer> commandBuffer = [_commandQueue commandBuffer];
    
-    if (![self setupPipelineIfNeed:attach.videoPicture blend:attach.hasAlpha]) {
+    if (![self setupPipelineIfNeed:attach blend:attach.hasAlpha]) {
         return NULL;
     }
     

@@ -30,6 +30,7 @@
 #include "ijksdl_class.h"
 #include "ijksdl_mutex.h"
 #include "ijksdl_video.h"
+#include "ijksdl_dovi.h"
 #include "ijksdl/ffmpeg/ijksdl_inc_ffmpeg.h"
 #include "ijksdl_fourcc.h"
 
@@ -52,6 +53,7 @@ struct SDL_VoutOverlay {
     //for auto rotate video
     int auto_z_rotate_degrees;
     int has_alpha;
+    FSDOVIFrameInfo dovi_info;
     SDL_Class               *opaque_class;
     SDL_VoutOverlay_Opaque  *opaque;
 
