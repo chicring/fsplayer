@@ -1267,6 +1267,10 @@ static void fs_reset_dovi_info(FSDOVIFrameInfo *info)
 
 static void fs_fill_dovi_info(const AVFrame *frame, FSDOVIFrameInfo *out_info)
 {
+    static int s_dovi_no_metadata_logged = 0;
+    static int s_dovi_softdecode_enabled_logged = 0;
+    static int s_dovi_mmr_degraded_logged = 0;
+
     fs_reset_dovi_info(out_info);
     if (!frame || !out_info) {
         return;
@@ -1276,6 +1280,10 @@ static void fs_fill_dovi_info(const AVFrame *frame, FSDOVIFrameInfo *out_info)
 
     AVFrameSideData *dovi_sd = av_frame_get_side_data((AVFrame *)frame, AV_FRAME_DATA_DOVI_METADATA);
     if (!dovi_sd || !dovi_sd->data) {
+        if (out_info->is_software_decode && !s_dovi_no_metadata_logged) {
+            s_dovi_no_metadata_logged = 1;
+            ALOGW("DOVI: no AV_FRAME_DATA_DOVI_METADATA on software decode frame, reshape stays disabled.\n");
+        }
         return;
     }
 
@@ -1337,6 +1345,13 @@ static void fs_fill_dovi_info(const AVFrame *frame, FSDOVIFrameInfo *out_info)
 
     if (params->has_mmr) {
         params->enabled = 0;
+        if (!s_dovi_mmr_degraded_logged) {
+            s_dovi_mmr_degraded_logged = 1;
+            ALOGW("DOVI: profile 5 metadata contains MMR segments, current shader only handles polynomial; reshape degraded.\n");
+        }
+    } else if (!s_dovi_softdecode_enabled_logged) {
+        s_dovi_softdecode_enabled_logged = 1;
+        ALOGI("DOVI: profile 5 software decode reshape enabled (polynomial mode).\n");
     }
 }
 

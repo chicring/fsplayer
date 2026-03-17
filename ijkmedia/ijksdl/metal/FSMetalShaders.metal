@@ -383,6 +383,7 @@ float dovi_reshape_component(float x, device const FSDOVIReshapeComp *comp)
 
 float3 dovi_decode(float3 ipt, device const FSDOVIParams *dovi)
 {
+    ipt = clamp(ipt, 0.0, 1.0);
     float3 reshaped = float3(
                              dovi_reshape_component(ipt.x, &dovi->comp[0]),
                              dovi_reshape_component(ipt.y, &dovi->comp[1]),
@@ -391,7 +392,13 @@ float3 dovi_decode(float3 ipt, device const FSDOVIParams *dovi)
     float3 nonlinear = dovi_mul_mat3(dovi->nonlinear_matrix, reshaped);
     nonlinear += float3(dovi->nonlinear_offset[0], dovi->nonlinear_offset[1], dovi->nonlinear_offset[2]);
     float3 linearized = st_2084_eotf_vec(nonlinear);
-    return dovi_mul_mat3(dovi->linear_matrix, linearized);
+    float3 hpe_lms = dovi_mul_mat3(dovi->linear_matrix, linearized);
+    // Dolby Vision color metadata outputs BT.2020-referred HPE LMS.
+    return float3(
+                  3.06441879 * hpe_lms.x + -2.16597676 * hpe_lms.y + 0.10155818 * hpe_lms.z,
+                 -0.65612108 * hpe_lms.x +  1.78554118 * hpe_lms.y + -0.12943749 * hpe_lms.z,
+                  0.01736321 * hpe_lms.x + -0.04725154 * hpe_lms.y + 1.03004253 * hpe_lms.z
+                  );
 }
 
 float3 dovi_linear_bt2020_to_sdr(float3 linear_rgb_2020, float x, float hdrPercentage)
