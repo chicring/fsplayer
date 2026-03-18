@@ -41,6 +41,8 @@ typedef struct FSMuxer {
     int64_t video_start_pts;
 } FSMuxer;
 
+static int fs_stream_has_dovi_conf(const AVStream *stream);
+
 static int fs_video_codec_priority(enum AVCodecID codec_id)
 {
     switch (codec_id) {
@@ -284,6 +286,8 @@ int ff_transmux_to_hls_fmp4(
     int audio_stream = -1;
     int video_has_key_written = 0;
     int64_t *last_dts_per_stream = NULL;
+    int synthesized_ts_count = 0;
+    int dropped_no_ts_count = 0;
 
     if (!input_url || !*input_url || !output_directory || !*output_directory) {
         return -1;
@@ -506,8 +510,31 @@ int ff_transmux_to_hls_fmp4(
         AVStream *in_stream = ifmt_ctx->streams[input_stream_index];
         AVStream *out_stream = ofmt_ctx->streams[mapped_index];
         if (packet.pts == AV_NOPTS_VALUE && packet.dts == AV_NOPTS_VALUE) {
-            av_packet_unref(&packet);
-            continue;
+            if ((unsigned int)mapped_index < ofmt_ctx->nb_streams &&
+                last_dts_per_stream &&
+                last_dts_per_stream[mapped_index] != AV_NOPTS_VALUE) {
+                packet.dts = last_dts_per_stream[mapped_index] + 1;
+                packet.pts = packet.dts;
+                synthesized_ts_count++;
+                av_log(
+                    NULL,
+                    AV_LOG_WARNING,
+                    "transmux: synthesized pts/dts stream=%d pts=%lld dts=%lld\n",
+                    mapped_index,
+                    (long long)packet.pts,
+                    (long long)packet.dts
+                );
+            } else {
+                dropped_no_ts_count++;
+                av_log(
+                    NULL,
+                    AV_LOG_WARNING,
+                    "transmux: drop packet without pts/dts stream=%d\n",
+                    mapped_index
+                );
+                av_packet_unref(&packet);
+                continue;
+            }
         }
         if (packet.pts == AV_NOPTS_VALUE) {
             packet.pts = packet.dts;
@@ -561,6 +588,13 @@ int ff_transmux_to_hls_fmp4(
         ret = -13;
         goto end;
     }
+    av_log(
+        NULL,
+        AV_LOG_INFO,
+        "transmux: ts_stats synthesized=%d dropped_no_ts=%d\n",
+        synthesized_ts_count,
+        dropped_no_ts_count
+    );
     ret = 0;
 
 end:
