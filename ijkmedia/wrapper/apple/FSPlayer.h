@@ -109,6 +109,7 @@ FOUNDATION_EXPORT NSErrorDomain const FSTransmuxerErrorDomain;
 @property(nonatomic, copy) NSString *outputDirectory;
 @property(nonatomic, assign) NSInteger segmentDurationSec;
 @property(nonatomic, assign) NSInteger timeoutSec;
+@property(nonatomic, assign) BOOL preferDolbyVision;
 @end
 
 @interface FSTransmuxResult : NSObject

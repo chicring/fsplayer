@@ -41,18 +41,72 @@ typedef struct FSMuxer {
     int64_t video_start_pts;
 } FSMuxer;
 
+static int fs_video_codec_priority(enum AVCodecID codec_id)
+{
+    switch (codec_id) {
+        case AV_CODEC_ID_HEVC:
+            return 600;
+        case AV_CODEC_ID_H264:
+            return 520;
+#ifdef AV_CODEC_ID_AV1
+        case AV_CODEC_ID_AV1:
+            return 460;
+#endif
+        default:
+            return 300;
+    }
+}
+
 static int fs_pick_video_stream(const AVFormatContext *ifmt_ctx)
 {
     if (!ifmt_ctx) {
         return -1;
     }
+    int fallback_video = -1;
+    int best_video = -1;
+    int best_score = INT_MIN;
     for (unsigned int i = 0; i < ifmt_ctx->nb_streams; i++) {
         const AVStream *stream = ifmt_ctx->streams[i];
-        if (stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            return (int)i;
+        if (!stream || !stream->codecpar || stream->codecpar->codec_type != AVMEDIA_TYPE_VIDEO) {
+            continue;
+        }
+        if (fallback_video < 0) {
+            fallback_video = (int)i;
+        }
+        if (stream->disposition & AV_DISPOSITION_ATTACHED_PIC) {
+            continue;
+        }
+        int score = fs_video_codec_priority(stream->codecpar->codec_id);
+        if (stream->disposition & AV_DISPOSITION_DEFAULT) {
+            score += 40;
+        }
+        if (fs_stream_has_dovi_conf(stream)) {
+            score += 120;
+        }
+        if (stream->codecpar->color_primaries == AVCOL_PRI_BT2020) {
+            score += 20;
+        }
+        if (stream->codecpar->color_trc == AVCOL_TRC_SMPTE2084) {
+            score += 20;
+        }
+        if (stream->codecpar->width > 0 && stream->codecpar->height > 0) {
+            const int pixels = stream->codecpar->width * stream->codecpar->height;
+            if (pixels >= 3840 * 2160) {
+                score += 25;
+            } else if (pixels >= 1920 * 1080) {
+                score += 12;
+            }
+        }
+        score -= (int)i;
+        if (score > best_score) {
+            best_score = score;
+            best_video = (int)i;
         }
     }
-    return -1;
+    if (best_video >= 0) {
+        return best_video;
+    }
+    return fallback_video;
 }
 
 static int fs_stream_has_dovi_conf(const AVStream *stream)
@@ -200,7 +254,14 @@ static int fs_pick_audio_stream(const AVFormatContext *ifmt_ctx)
     if (best_audio >= 0 && best_score > -200) {
         return best_audio;
     }
-    return fallback_audio;
+    if (fallback_audio >= 0) {
+        const AVStream *fallback_stream = ifmt_ctx->streams[fallback_audio];
+        if (fallback_stream && fallback_stream->codecpar &&
+            fs_audio_codec_priority(fallback_stream->codecpar->codec_id) > 0) {
+            return fallback_audio;
+        }
+    }
+    return -1;
 }
 
 int ff_transmux_to_hls_fmp4(
@@ -208,7 +269,8 @@ int ff_transmux_to_hls_fmp4(
     const char *output_directory,
     const char *headers,
     int segment_duration_sec,
-    int timeout_sec
+    int timeout_sec,
+    int prefer_dolby_vision
 )
 {
     int ret = 0;
@@ -311,8 +373,24 @@ int ff_transmux_to_hls_fmp4(
         }
         fs_copy_stream_side_data(in_stream, out_stream);
         if (out_stream->codecpar->codec_id == AV_CODEC_ID_HEVC) {
-            if (fs_stream_has_dovi_conf(in_stream)) {
+            const int has_dovi = fs_stream_has_dovi_conf(in_stream);
+            const int should_use_dolby_tag = has_dovi || prefer_dolby_vision;
+            if (should_use_dolby_tag) {
                 out_stream->codecpar->codec_tag = MKTAG('d', 'v', 'h', '1');
+                // Some MKV Dolby streams miss explicit color fields. Fill safe PQ/BT.2020 defaults
+                // so fMP4 colr boxes are emitted with expected HDR signaling for AVPlayer.
+                if (out_stream->codecpar->color_primaries == AVCOL_PRI_UNSPECIFIED) {
+                    out_stream->codecpar->color_primaries = AVCOL_PRI_BT2020;
+                }
+                if (out_stream->codecpar->color_trc == AVCOL_TRC_UNSPECIFIED) {
+                    out_stream->codecpar->color_trc = AVCOL_TRC_SMPTE2084;
+                }
+                if (out_stream->codecpar->color_space == AVCOL_SPC_UNSPECIFIED) {
+                    out_stream->codecpar->color_space = AVCOL_SPC_BT2020_NCL;
+                }
+                if (out_stream->codecpar->color_range == AVCOL_RANGE_UNSPECIFIED) {
+                    out_stream->codecpar->color_range = AVCOL_RANGE_MPEG;
+                }
             } else {
                 out_stream->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1');
             }
@@ -339,7 +417,7 @@ int ff_transmux_to_hls_fmp4(
     av_dict_set(&out_opts, "hls_playlist_type", "event", 0);
     av_dict_set(&out_opts, "hls_list_size", "0", 0);
     av_dict_set(&out_opts, "hls_segment_type", "fmp4", 0);
-    av_dict_set(&out_opts, "hls_flags", "independent_segments+append_list+temp_file", 0);
+    av_dict_set(&out_opts, "hls_flags", "independent_segments+temp_file", 0);
     av_dict_set(&out_opts, "hls_fmp4_init_filename", "init.mp4", 0);
     av_dict_set(&out_opts, "hls_segment_filename", segment_filename_pattern, 0);
     av_dict_set(&out_opts, "strict", "unofficial", 0);
@@ -358,11 +436,16 @@ int ff_transmux_to_hls_fmp4(
         av_log(
             NULL,
             AV_LOG_INFO,
-            "transmux: selected video stream=%d codec=%s dovi=%d tag=%s\n",
+            "transmux: selected video stream=%d codec=%s dovi=%d prefer_dolby=%d tag=%s color_range=%d primaries=%d trc=%d colorspace=%d\n",
             video_stream,
             video_codec_name,
             has_dovi,
-            has_dovi ? "dvh1" : "hvc1"
+            prefer_dolby_vision ? 1 : 0,
+            (has_dovi || prefer_dolby_vision) ? "dvh1" : "hvc1",
+            selected_video && selected_video->codecpar ? selected_video->codecpar->color_range : -1,
+            selected_video && selected_video->codecpar ? selected_video->codecpar->color_primaries : -1,
+            selected_video && selected_video->codecpar ? selected_video->codecpar->color_trc : -1,
+            selected_video && selected_video->codecpar ? selected_video->codecpar->color_space : -1
         );
     }
     if (audio_stream >= 0) {

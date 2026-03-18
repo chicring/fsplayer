@@ -49,7 +49,8 @@ int ff_transmux_to_hls_fmp4(
     const char *output_directory,
     const char *headers,
     int segment_duration_sec,
-    int timeout_sec
+    int timeout_sec,
+    int prefer_dolby_vision
 );
 
 static const char *kIJKFFRequiredFFmpegVersion = "n7.1.1-32";
@@ -86,6 +87,7 @@ typedef NS_ENUM(NSInteger, FSTransmuxerErrorCode) {
     _headers = @{};
     _segmentDurationSec = 4;
     _timeoutSec = 10;
+    _preferDolbyVision = NO;
     _sourceURL = @"";
     _outputDirectory = @"";
     return self;
@@ -122,7 +124,8 @@ typedef NS_ENUM(NSInteger, FSTransmuxerErrorCode) {
         request.outputDirectory.UTF8String,
         headersText.length > 0 ? headersText.UTF8String : NULL,
         segmentDuration,
-        timeoutSec
+        timeoutSec,
+        request.preferDolbyVision ? 1 : 0
     );
     if (ret != 0) {
         if (error) {
