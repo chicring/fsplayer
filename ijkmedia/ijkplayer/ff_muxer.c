@@ -73,14 +73,14 @@ static int fs_audio_codec_priority(enum AVCodecID codec_id)
 {
     switch (codec_id) {
         case AV_CODEC_ID_EAC3:
-            return 600;
+            return 480;
         case AV_CODEC_ID_AC3:
-            return 520;
-        case AV_CODEC_ID_AAC:
             return 500;
+        case AV_CODEC_ID_AAC:
+            return 520;
 #ifdef AV_CODEC_ID_AAC_LATM
         case AV_CODEC_ID_AAC_LATM:
-            return 500;
+            return 520;
 #endif
         case AV_CODEC_ID_MP3:
             return 420;
@@ -271,7 +271,7 @@ int ff_transmux_to_hls_fmp4(
     av_dict_set(&out_opts, "hls_playlist_type", "event", 0);
     av_dict_set(&out_opts, "hls_list_size", "0", 0);
     av_dict_set(&out_opts, "hls_segment_type", "fmp4", 0);
-    av_dict_set(&out_opts, "hls_flags", "independent_segments+append_list", 0);
+    av_dict_set(&out_opts, "hls_flags", "independent_segments+append_list+temp_file", 0);
     av_dict_set(&out_opts, "hls_fmp4_init_filename", "init.mp4", 0);
     av_dict_set(&out_opts, "hls_segment_filename", segment_filename_pattern, 0);
     av_dict_set(&out_opts, "strict", "unofficial", 0);
@@ -296,10 +296,26 @@ int ff_transmux_to_hls_fmp4(
         }
         AVStream *in_stream = ifmt_ctx->streams[packet.stream_index];
         AVStream *out_stream = ofmt_ctx->streams[mapped_index];
+        if (packet.pts == AV_NOPTS_VALUE && packet.dts == AV_NOPTS_VALUE) {
+            av_packet_unref(&packet);
+            continue;
+        }
+        if (packet.pts == AV_NOPTS_VALUE) {
+            packet.pts = packet.dts;
+        }
+        if (packet.dts == AV_NOPTS_VALUE) {
+            packet.dts = packet.pts;
+        }
+        if (packet.duration <= 0) {
+            packet.duration = 1;
+        }
         packet.stream_index = mapped_index;
         packet.pts = av_rescale_q_rnd(packet.pts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
         packet.dts = av_rescale_q_rnd(packet.dts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
         packet.duration = av_rescale_q(packet.duration, in_stream->time_base, out_stream->time_base);
+        if (packet.duration <= 0) {
+            packet.duration = 1;
+        }
         packet.pos = -1;
         if (packet.pts != AV_NOPTS_VALUE && packet.dts != AV_NOPTS_VALUE && packet.pts < packet.dts) {
             packet.pts = packet.dts;
