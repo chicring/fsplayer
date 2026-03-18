@@ -116,6 +116,7 @@ int ff_transmux_to_hls_fmp4(
     if (headers && *headers) {
         av_dict_set(&in_opts, "headers", headers, 0);
     }
+    av_dict_set(&in_opts, "fflags", "+genpts", 0);
     if (timeout_sec > 0) {
         char timeout_buf[32] = {0};
         snprintf(timeout_buf, sizeof(timeout_buf), "%lld", (long long)timeout_sec * 1000000LL);
@@ -218,6 +219,7 @@ int ff_transmux_to_hls_fmp4(
     av_dict_set(&out_opts, "hls_flags", "independent_segments+append_list", 0);
     av_dict_set(&out_opts, "hls_fmp4_init_filename", "init.mp4", 0);
     av_dict_set(&out_opts, "hls_segment_filename", segment_filename_pattern, 0);
+    av_dict_set(&out_opts, "strict", "unofficial", 0);
 
     ret = avformat_write_header(ofmt_ctx, &out_opts);
     av_dict_free(&out_opts);
