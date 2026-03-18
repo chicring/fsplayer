@@ -220,6 +220,8 @@ int ff_transmux_to_hls_fmp4(
     int *stream_mapping = NULL;
     int video_stream = -1;
     int audio_stream = -1;
+    int video_has_key_written = 0;
+    int64_t *last_dts_per_stream = NULL;
 
     if (!input_url || !*input_url || !output_directory || !*output_directory) {
         return -1;
@@ -229,6 +231,8 @@ int ff_transmux_to_hls_fmp4(
         av_dict_set(&in_opts, "headers", headers, 0);
     }
     av_dict_set(&in_opts, "fflags", "+genpts", 0);
+    av_dict_set(&in_opts, "probesize", "20000000", 0);
+    av_dict_set(&in_opts, "analyzeduration", "30000000", 0);
     if (timeout_sec > 0) {
         char timeout_buf[32] = {0};
         snprintf(timeout_buf, sizeof(timeout_buf), "%lld", (long long)timeout_sec * 1000000LL);
@@ -340,6 +344,10 @@ int ff_transmux_to_hls_fmp4(
     av_dict_set(&out_opts, "hls_segment_filename", segment_filename_pattern, 0);
     av_dict_set(&out_opts, "strict", "unofficial", 0);
     av_dict_set(&out_opts, "hls_segment_options", "strict=unofficial:movflags=+frag_keyframe+default_base_moof+delay_moov:write_colr=1", 0);
+    av_dict_set(&out_opts, "avoid_negative_ts", "make_non_negative", 0);
+    av_dict_set(&out_opts, "max_interleave_delta", "0", 0);
+    av_dict_set(&out_opts, "muxdelay", "0", 0);
+    av_dict_set(&out_opts, "muxpreload", "0", 0);
 
     if (video_stream >= 0) {
         AVStream *selected_video = ifmt_ctx->streams[video_stream];
@@ -375,17 +383,44 @@ int ff_transmux_to_hls_fmp4(
         goto end;
     }
 
+    if (ofmt_ctx->nb_streams > 0) {
+        last_dts_per_stream = av_mallocz(sizeof(int64_t) * ofmt_ctx->nb_streams);
+        if (!last_dts_per_stream) {
+            ret = -15;
+            goto end;
+        }
+        for (unsigned int i = 0; i < ofmt_ctx->nb_streams; i++) {
+            last_dts_per_stream[i] = AV_NOPTS_VALUE;
+        }
+    }
+
     AVPacket packet;
     av_init_packet(&packet);
     while ((ret = av_read_frame(ifmt_ctx, &packet)) >= 0) {
-        int mapped_index = (packet.stream_index >= 0 && (unsigned int)packet.stream_index < ifmt_ctx->nb_streams)
-            ? stream_mapping[packet.stream_index]
+        int input_stream_index = packet.stream_index;
+        int mapped_index = (input_stream_index >= 0 && (unsigned int)input_stream_index < ifmt_ctx->nb_streams)
+            ? stream_mapping[input_stream_index]
             : -1;
         if (mapped_index < 0) {
             av_packet_unref(&packet);
             continue;
         }
-        AVStream *in_stream = ifmt_ctx->streams[packet.stream_index];
+
+        if (!video_has_key_written) {
+            if (input_stream_index == video_stream) {
+                if (!(packet.flags & AV_PKT_FLAG_KEY)) {
+                    av_packet_unref(&packet);
+                    continue;
+                }
+                video_has_key_written = 1;
+                av_log(NULL, AV_LOG_INFO, "transmux: first video keyframe accepted pts=%lld dts=%lld\n", packet.pts, packet.dts);
+            } else {
+                av_packet_unref(&packet);
+                continue;
+            }
+        }
+
+        AVStream *in_stream = ifmt_ctx->streams[input_stream_index];
         AVStream *out_stream = ofmt_ctx->streams[mapped_index];
         if (packet.pts == AV_NOPTS_VALUE && packet.dts == AV_NOPTS_VALUE) {
             av_packet_unref(&packet);
@@ -410,6 +445,18 @@ int ff_transmux_to_hls_fmp4(
         packet.pos = -1;
         if (packet.pts != AV_NOPTS_VALUE && packet.dts != AV_NOPTS_VALUE && packet.pts < packet.dts) {
             packet.pts = packet.dts;
+        }
+        if ((unsigned int)mapped_index < ofmt_ctx->nb_streams) {
+            int64_t last_dts = last_dts_per_stream ? last_dts_per_stream[mapped_index] : AV_NOPTS_VALUE;
+            if (last_dts != AV_NOPTS_VALUE && packet.dts != AV_NOPTS_VALUE && packet.dts <= last_dts) {
+                packet.dts = last_dts + 1;
+                if (packet.pts != AV_NOPTS_VALUE && packet.pts < packet.dts) {
+                    packet.pts = packet.dts;
+                }
+            }
+            if (last_dts_per_stream && packet.dts != AV_NOPTS_VALUE) {
+                last_dts_per_stream[mapped_index] = packet.dts;
+            }
         }
         ret = av_interleaved_write_frame(ofmt_ctx, &packet);
         av_packet_unref(&packet);
@@ -447,6 +494,9 @@ end:
     }
     if (stream_mapping) {
         av_freep(&stream_mapping);
+    }
+    if (last_dts_per_stream) {
+        av_freep(&last_dts_per_stream);
     }
     return ret;
 }
