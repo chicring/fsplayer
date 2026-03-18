@@ -23,6 +23,8 @@
 #include "ff_muxer.h"
 #include "ff_ffplay_def.h"
 #include "ff_packet_list.h"
+#include <limits.h>
+#include <strings.h>
 
 typedef struct FSMuxer {
     const AVFormatContext *ifmt_ctx;
@@ -37,6 +39,239 @@ typedef struct FSMuxer {
     int64_t audio_start_pts;
     int64_t video_start_pts;
 } FSMuxer;
+
+static int fs_pick_video_stream(const AVFormatContext *ifmt_ctx)
+{
+    if (!ifmt_ctx) {
+        return -1;
+    }
+    for (unsigned int i = 0; i < ifmt_ctx->nb_streams; i++) {
+        const AVStream *stream = ifmt_ctx->streams[i];
+        if (stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static int fs_contains_ignore_case(const char *text, const char *keyword)
+{
+    if (!text || !keyword || !*keyword) {
+        return 0;
+    }
+    return strcasestr(text, keyword) != NULL;
+}
+
+static int fs_pick_audio_stream(const AVFormatContext *ifmt_ctx)
+{
+    if (!ifmt_ctx) {
+        return -1;
+    }
+    int fallback_audio = -1;
+    for (unsigned int i = 0; i < ifmt_ctx->nb_streams; i++) {
+        const AVStream *stream = ifmt_ctx->streams[i];
+        if (!stream || !stream->codecpar || stream->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) {
+            continue;
+        }
+        if (fallback_audio < 0) {
+            fallback_audio = (int)i;
+        }
+        if (stream->codecpar->codec_id != AV_CODEC_ID_EAC3) {
+            continue;
+        }
+        AVDictionaryEntry *title = av_dict_get(stream->metadata, "title", NULL, AV_DICT_IGNORE_SUFFIX);
+        AVDictionaryEntry *handler = av_dict_get(stream->metadata, "handler_name", NULL, AV_DICT_IGNORE_SUFFIX);
+        const char *title_value = title ? title->value : NULL;
+        const char *handler_value = handler ? handler->value : NULL;
+        if (fs_contains_ignore_case(title_value, "joc") || fs_contains_ignore_case(title_value, "atmos") ||
+            fs_contains_ignore_case(handler_value, "joc") || fs_contains_ignore_case(handler_value, "atmos")) {
+            return (int)i;
+        }
+    }
+    return fallback_audio;
+}
+
+int ff_transmux_to_hls_fmp4(
+    const char *input_url,
+    const char *output_directory,
+    const char *headers,
+    int segment_duration_sec,
+    int timeout_sec
+)
+{
+    int ret = 0;
+    AVFormatContext *ifmt_ctx = NULL;
+    AVFormatContext *ofmt_ctx = NULL;
+    AVDictionary *in_opts = NULL;
+    AVDictionary *out_opts = NULL;
+    int *stream_mapping = NULL;
+    int video_stream = -1;
+    int audio_stream = -1;
+
+    if (!input_url || !*input_url || !output_directory || !*output_directory) {
+        return -1;
+    }
+
+    if (headers && *headers) {
+        av_dict_set(&in_opts, "headers", headers, 0);
+    }
+    if (timeout_sec > 0) {
+        char timeout_buf[32] = {0};
+        snprintf(timeout_buf, sizeof(timeout_buf), "%lld", (long long)timeout_sec * 1000000LL);
+        av_dict_set(&in_opts, "rw_timeout", timeout_buf, 0);
+        av_dict_set(&in_opts, "timeout", timeout_buf, 0);
+    }
+
+    ret = avformat_open_input(&ifmt_ctx, input_url, NULL, &in_opts);
+    av_dict_free(&in_opts);
+    if (ret < 0) {
+        av_log(NULL, AV_LOG_ERROR, "transmux: avformat_open_input failed, ret=%d\n", ret);
+        ret = -2;
+        goto end;
+    }
+    ret = avformat_find_stream_info(ifmt_ctx, NULL);
+    if (ret < 0) {
+        av_log(NULL, AV_LOG_ERROR, "transmux: avformat_find_stream_info failed, ret=%d\n", ret);
+        ret = -3;
+        goto end;
+    }
+
+    video_stream = fs_pick_video_stream(ifmt_ctx);
+    audio_stream = fs_pick_audio_stream(ifmt_ctx);
+    if (video_stream < 0) {
+        av_log(NULL, AV_LOG_ERROR, "transmux: no video stream\n");
+        ret = -4;
+        goto end;
+    }
+
+    char master_playlist_path[PATH_MAX] = {0};
+    char segment_filename_pattern[PATH_MAX] = {0};
+    snprintf(master_playlist_path, sizeof(master_playlist_path), "%s/master.m3u8", output_directory);
+    snprintf(segment_filename_pattern, sizeof(segment_filename_pattern), "%s/segment_%05d.m4s", output_directory);
+
+    ret = avformat_alloc_output_context2(&ofmt_ctx, NULL, "hls", master_playlist_path);
+    if (ret < 0 || !ofmt_ctx) {
+        av_log(NULL, AV_LOG_ERROR, "transmux: avformat_alloc_output_context2 failed, ret=%d\n", ret);
+        ret = -5;
+        goto end;
+    }
+
+    stream_mapping = av_mallocz(sizeof(int) * ifmt_ctx->nb_streams);
+    if (!stream_mapping) {
+        ret = -6;
+        goto end;
+    }
+    for (unsigned int i = 0; i < ifmt_ctx->nb_streams; i++) {
+        stream_mapping[i] = -1;
+    }
+
+    for (unsigned int i = 0; i < ifmt_ctx->nb_streams; i++) {
+        if ((int)i != video_stream && (int)i != audio_stream) {
+            continue;
+        }
+        AVStream *in_stream = ifmt_ctx->streams[i];
+        AVStream *out_stream = avformat_new_stream(ofmt_ctx, NULL);
+        if (!in_stream || !out_stream) {
+            ret = -7;
+            goto end;
+        }
+        ret = avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
+        if (ret < 0) {
+            av_log(NULL, AV_LOG_ERROR, "transmux: avcodec_parameters_copy failed, ret=%d\n", ret);
+            ret = -8;
+            goto end;
+        }
+        out_stream->codecpar->codec_tag = 0;
+        out_stream->time_base = in_stream->time_base;
+        stream_mapping[i] = out_stream->index;
+    }
+
+    if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
+        ret = avio_open(&ofmt_ctx->pb, master_playlist_path, AVIO_FLAG_WRITE);
+        if (ret < 0) {
+            av_log(NULL, AV_LOG_ERROR, "transmux: avio_open failed, ret=%d\n", ret);
+            ret = -9;
+            goto end;
+        }
+    }
+
+    char hls_time_buf[16] = {0};
+    int normalized_segment_duration_sec = segment_duration_sec > 0 ? segment_duration_sec : 4;
+    snprintf(hls_time_buf, sizeof(hls_time_buf), "%d", normalized_segment_duration_sec);
+    av_dict_set(&out_opts, "hls_time", hls_time_buf, 0);
+    av_dict_set(&out_opts, "hls_playlist_type", "vod", 0);
+    av_dict_set(&out_opts, "hls_segment_type", "fmp4", 0);
+    av_dict_set(&out_opts, "hls_flags", "independent_segments", 0);
+    av_dict_set(&out_opts, "hls_fmp4_init_filename", "init.mp4", 0);
+    av_dict_set(&out_opts, "hls_segment_filename", segment_filename_pattern, 0);
+
+    ret = avformat_write_header(ofmt_ctx, &out_opts);
+    av_dict_free(&out_opts);
+    if (ret < 0) {
+        av_log(NULL, AV_LOG_ERROR, "transmux: avformat_write_header failed, ret=%d\n", ret);
+        ret = -10;
+        goto end;
+    }
+
+    AVPacket packet;
+    av_init_packet(&packet);
+    while ((ret = av_read_frame(ifmt_ctx, &packet)) >= 0) {
+        int mapped_index = (packet.stream_index >= 0 && (unsigned int)packet.stream_index < ifmt_ctx->nb_streams)
+            ? stream_mapping[packet.stream_index]
+            : -1;
+        if (mapped_index < 0) {
+            av_packet_unref(&packet);
+            continue;
+        }
+        AVStream *in_stream = ifmt_ctx->streams[packet.stream_index];
+        AVStream *out_stream = ofmt_ctx->streams[mapped_index];
+        packet.stream_index = mapped_index;
+        packet.pts = av_rescale_q_rnd(packet.pts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+        packet.dts = av_rescale_q_rnd(packet.dts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+        packet.duration = av_rescale_q(packet.duration, in_stream->time_base, out_stream->time_base);
+        packet.pos = -1;
+        if (packet.pts != AV_NOPTS_VALUE && packet.dts != AV_NOPTS_VALUE && packet.pts < packet.dts) {
+            packet.pts = packet.dts;
+        }
+        ret = av_interleaved_write_frame(ofmt_ctx, &packet);
+        av_packet_unref(&packet);
+        if (ret < 0) {
+            av_log(NULL, AV_LOG_ERROR, "transmux: av_interleaved_write_frame failed, ret=%d\n", ret);
+            ret = -11;
+            goto end;
+        }
+    }
+    if (ret == AVERROR_EOF) {
+        ret = 0;
+    }
+    if (ret < 0) {
+        ret = -12;
+        goto end;
+    }
+    ret = av_write_trailer(ofmt_ctx);
+    if (ret < 0) {
+        ret = -13;
+        goto end;
+    }
+    ret = 0;
+
+end:
+    av_dict_free(&in_opts);
+    av_dict_free(&out_opts);
+    if (ifmt_ctx) {
+        avformat_close_input(&ifmt_ctx);
+    }
+    if (ofmt_ctx) {
+        if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE) && ofmt_ctx->pb) {
+            avio_closep(&ofmt_ctx->pb);
+        }
+        avformat_free_context(ofmt_ctx);
+    }
+    if (stream_mapping) {
+        av_freep(&stream_mapping);
+    }
+    return ret;
+}
 
 int ff_create_muxer(void **out_ffr, const char *file_name, const AVFormatContext *ifmt_ctx, int audio_stream, int video_stream)
 {

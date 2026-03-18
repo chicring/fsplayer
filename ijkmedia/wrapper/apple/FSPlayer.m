@@ -40,6 +40,17 @@
 #include "../ijkmedia/ijkplayer/apple/ijkplayer_ios.h"
 #include "../ijkmedia/ijkplayer/ijkmeta.h"
 #include "../ijkmedia/ijkplayer/ff_ffmsg_queue.h"
+#include <dirent.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+int ff_transmux_to_hls_fmp4(
+    const char *input_url,
+    const char *output_directory,
+    const char *headers,
+    int segment_duration_sec,
+    int timeout_sec
+);
 
 static const char *kIJKFFRequiredFFmpegVersion = "n7.1.1-32";
 
@@ -54,6 +65,173 @@ static void (^_logHandler)(FSLogLevel level, NSString *tag, NSString *msg);
 - (void)dealloc {
     av_log(NULL, AV_LOG_DEBUG, "FSWeakHolder dealloc\n");
 }
+@end
+
+NSErrorDomain const FSTransmuxerErrorDomain = @"com.fsplayer.transmuxer";
+
+typedef NS_ENUM(NSInteger, FSTransmuxerErrorCode) {
+    FSTransmuxerErrorInvalidRequest = -1001,
+    FSTransmuxerErrorPrepareDirectoryFailed = -1002,
+    FSTransmuxerErrorExecutionFailed = -1003,
+    FSTransmuxerErrorOutputMissing = -1004,
+};
+
+@implementation FSTransmuxRequest
+- (instancetype)init
+{
+    self = [super init];
+    if (!self) {
+        return nil;
+    }
+    _headers = @{};
+    _segmentDurationSec = 4;
+    _timeoutSec = 10;
+    _sourceURL = @"";
+    _outputDirectory = @"";
+    return self;
+}
+@end
+
+@implementation FSTransmuxResult
+@end
+
+@implementation FSTransmuxer
+
+- (nullable FSTransmuxResult *)transmux:(FSTransmuxRequest *)request error:(NSError * _Nullable * _Nullable)error
+{
+    if (!request || request.sourceURL.length == 0 || request.outputDirectory.length == 0) {
+        if (error) {
+            *error = [NSError errorWithDomain:FSTransmuxerErrorDomain
+                                         code:FSTransmuxerErrorInvalidRequest
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Invalid transmux request"}];
+        }
+        return nil;
+    }
+
+    if (![self prepareDirectory:request.outputDirectory error:error]) {
+        return nil;
+    }
+
+    NSString *headersText = [self headersText:request.headers];
+    int segmentDuration = (int)MAX(1, request.segmentDurationSec);
+    int timeoutSec = (int)MAX(1, request.timeoutSec);
+    CFAbsoluteTime start = CFAbsoluteTimeGetCurrent();
+
+    int ret = ff_transmux_to_hls_fmp4(
+        request.sourceURL.UTF8String,
+        request.outputDirectory.UTF8String,
+        headersText.length > 0 ? headersText.UTF8String : NULL,
+        segmentDuration,
+        timeoutSec
+    );
+    if (ret != 0) {
+        if (error) {
+            *error = [NSError errorWithDomain:FSTransmuxerErrorDomain
+                                         code:FSTransmuxerErrorExecutionFailed
+                                     userInfo:@{
+                NSLocalizedDescriptionKey: [NSString stringWithFormat:@"FFmpeg transmux failed (%d)", ret],
+                @"retCode": @(ret),
+            }];
+        }
+        return nil;
+    }
+
+    NSString *masterPath = [request.outputDirectory stringByAppendingPathComponent:@"master.m3u8"];
+    BOOL masterExists = [[NSFileManager defaultManager] fileExistsAtPath:masterPath];
+    if (!masterExists) {
+        if (error) {
+            *error = [NSError errorWithDomain:FSTransmuxerErrorDomain
+                                         code:FSTransmuxerErrorOutputMissing
+                                     userInfo:@{NSLocalizedDescriptionKey: @"master.m3u8 was not generated"}];
+        }
+        return nil;
+    }
+
+    NSInteger segmentCount = 0;
+    int64_t outputBytes = [self collectOutputBytes:request.outputDirectory segmentCount:&segmentCount];
+    int64_t durationMs = (int64_t)((CFAbsoluteTimeGetCurrent() - start) * 1000.0);
+
+    FSTransmuxResult *result = [[FSTransmuxResult alloc] init];
+    result.masterPlaylistPath = masterPath;
+    result.segmentCount = segmentCount;
+    result.outputBytes = outputBytes;
+    result.durationMs = durationMs;
+    return result;
+}
+
+- (BOOL)prepareDirectory:(NSString *)directory error:(NSError * _Nullable * _Nullable)error
+{
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    BOOL isDirectory = NO;
+    if ([fileManager fileExistsAtPath:directory isDirectory:&isDirectory]) {
+        NSError *removeError = nil;
+        if (![fileManager removeItemAtPath:directory error:&removeError]) {
+            if (error) {
+                *error = [NSError errorWithDomain:FSTransmuxerErrorDomain
+                                             code:FSTransmuxerErrorPrepareDirectoryFailed
+                                         userInfo:@{
+                    NSLocalizedDescriptionKey: removeError.localizedDescription ?: @"Failed to cleanup output directory",
+                }];
+            }
+            return NO;
+        }
+    }
+    NSError *createError = nil;
+    if (![fileManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:&createError]) {
+        if (error) {
+            *error = [NSError errorWithDomain:FSTransmuxerErrorDomain
+                                         code:FSTransmuxerErrorPrepareDirectoryFailed
+                                     userInfo:@{
+                NSLocalizedDescriptionKey: createError.localizedDescription ?: @"Failed to create output directory",
+            }];
+        }
+        return NO;
+    }
+    return YES;
+}
+
+- (NSString *)headersText:(NSDictionary<NSString *,NSString *> *)headers
+{
+    if (!headers || headers.count == 0) {
+        return @"";
+    }
+    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithCapacity:headers.count];
+    [headers enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *value, BOOL *stop) {
+        if (key.length == 0 || value.length == 0) {
+            return;
+        }
+        [lines addObject:[NSString stringWithFormat:@"%@: %@", key, value]];
+    }];
+    if (lines.count == 0) {
+        return @"";
+    }
+    return [[lines componentsJoinedByString:@"\r\n"] stringByAppendingString:@"\r\n"];
+}
+
+- (int64_t)collectOutputBytes:(NSString *)rootPath segmentCount:(NSInteger *)segmentCount
+{
+    int64_t totalBytes = 0;
+    NSInteger count = 0;
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSDirectoryEnumerator *enumerator = [fileManager enumeratorAtPath:rootPath];
+    for (NSString *relativePath in enumerator) {
+        NSString *fullPath = [rootPath stringByAppendingPathComponent:relativePath];
+        NSDictionary *attrs = [fileManager attributesOfItemAtPath:fullPath error:nil];
+        if (![attrs.fileType isEqualToString:NSFileTypeRegular]) {
+            continue;
+        }
+        totalBytes += [attrs fileSize];
+        NSString *ext = relativePath.pathExtension.lowercaseString;
+        if ([ext isEqualToString:@"m4s"] || [ext isEqualToString:@"ts"]) {
+            count += 1;
+        }
+    }
+    if (segmentCount) {
+        *segmentCount = count;
+    }
+    return totalBytes;
+}
+
 @end
 
 @interface FSPlayer()

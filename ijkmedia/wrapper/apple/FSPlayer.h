@@ -100,6 +100,28 @@ typedef enum FSLogLevel {
 } FSLogLevel;
 
 NS_ASSUME_NONNULL_BEGIN
+
+FOUNDATION_EXPORT NSErrorDomain const FSTransmuxerErrorDomain;
+
+@interface FSTransmuxRequest : NSObject
+@property(nonatomic, copy) NSString *sourceURL;
+@property(nonatomic, copy) NSDictionary<NSString *, NSString *> *headers;
+@property(nonatomic, copy) NSString *outputDirectory;
+@property(nonatomic, assign) NSInteger segmentDurationSec;
+@property(nonatomic, assign) NSInteger timeoutSec;
+@end
+
+@interface FSTransmuxResult : NSObject
+@property(nonatomic, copy) NSString *masterPlaylistPath;
+@property(nonatomic, assign) NSInteger segmentCount;
+@property(nonatomic, assign) int64_t outputBytes;
+@property(nonatomic, assign) int64_t durationMs;
+@end
+
+@interface FSTransmuxer : NSObject
+- (nullable FSTransmuxResult *)transmux:(FSTransmuxRequest *)request error:(NSError * _Nullable * _Nullable)error;
+@end
+
 @interface FSPlayer : NSObject <FSMediaPlayback>
 
 - (id)initWithContentURL:(NSURL *)aUrl
