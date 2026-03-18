@@ -200,10 +200,12 @@ int ff_transmux_to_hls_fmp4(
     }
 
     char master_playlist_path[PATH_MAX] = {0};
-    char segment_filename_pattern[PATH_MAX] = {0};
+    char segment_filename_pattern[64] = {0};
     snprintf(master_playlist_path, sizeof(master_playlist_path), "%s/master.m3u8", output_directory);
-    // Keep "%05d" for the HLS muxer itself; snprintf needs escaped '%' here.
-    snprintf(segment_filename_pattern, sizeof(segment_filename_pattern), "%s/segment_%%05d.m4s", output_directory);
+    // Keep segment URI relative to master playlist, otherwise AVPlayer may resolve
+    // absolute paths outside the local proxy route (`/bridge/<cacheKey>/...`).
+    // snprintf needs escaped '%' here.
+    snprintf(segment_filename_pattern, sizeof(segment_filename_pattern), "segment_%%05d.m4s");
 
     hls_output_format = av_guess_format("hls", NULL, NULL);
     if (!hls_output_format) {
