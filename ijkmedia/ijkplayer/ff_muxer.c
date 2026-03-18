@@ -190,7 +190,11 @@ int ff_transmux_to_hls_fmp4(
             ret = -8;
             goto end;
         }
-        out_stream->codecpar->codec_tag = 0;
+        if (out_stream->codecpar->codec_id == AV_CODEC_ID_HEVC) {
+            out_stream->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1');
+        } else {
+            out_stream->codecpar->codec_tag = 0;
+        }
         out_stream->time_base = in_stream->time_base;
         stream_mapping[i] = out_stream->index;
     }
@@ -208,9 +212,10 @@ int ff_transmux_to_hls_fmp4(
     int normalized_segment_duration_sec = segment_duration_sec > 0 ? segment_duration_sec : 4;
     snprintf(hls_time_buf, sizeof(hls_time_buf), "%d", normalized_segment_duration_sec);
     av_dict_set(&out_opts, "hls_time", hls_time_buf, 0);
-    av_dict_set(&out_opts, "hls_playlist_type", "vod", 0);
+    av_dict_set(&out_opts, "hls_playlist_type", "event", 0);
+    av_dict_set(&out_opts, "hls_list_size", "0", 0);
     av_dict_set(&out_opts, "hls_segment_type", "fmp4", 0);
-    av_dict_set(&out_opts, "hls_flags", "independent_segments", 0);
+    av_dict_set(&out_opts, "hls_flags", "independent_segments+append_list", 0);
     av_dict_set(&out_opts, "hls_fmp4_init_filename", "init.mp4", 0);
     av_dict_set(&out_opts, "hls_segment_filename", segment_filename_pattern, 0);
 
