@@ -87,7 +87,7 @@ typedef NS_ENUM(NSInteger, FSTransmuxerErrorCode) {
     _headers = @{};
     _segmentDurationSec = 4;
     _timeoutSec = 10;
-    _preferDolbyVision = NO;
+    _preferDolbyVision = YES;
     _sourceURL = @"";
     _outputDirectory = @"";
     return self;
