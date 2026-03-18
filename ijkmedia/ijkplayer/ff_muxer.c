@@ -102,6 +102,7 @@ int ff_transmux_to_hls_fmp4(
     int ret = 0;
     AVFormatContext *ifmt_ctx = NULL;
     AVFormatContext *ofmt_ctx = NULL;
+    const AVOutputFormat *hls_output_format = NULL;
     AVDictionary *in_opts = NULL;
     AVDictionary *out_opts = NULL;
     int *stream_mapping = NULL;
@@ -149,7 +150,14 @@ int ff_transmux_to_hls_fmp4(
     snprintf(master_playlist_path, sizeof(master_playlist_path), "%s/master.m3u8", output_directory);
     snprintf(segment_filename_pattern, sizeof(segment_filename_pattern), "%s/segment_%05d.m4s", output_directory);
 
-    ret = avformat_alloc_output_context2(&ofmt_ctx, NULL, "hls", master_playlist_path);
+    hls_output_format = av_guess_format("hls", NULL, NULL);
+    if (!hls_output_format) {
+        av_log(NULL, AV_LOG_ERROR, "transmux: hls muxer unavailable, rebuild ffmpeg with --enable-muxer=hls\n");
+        ret = -14;
+        goto end;
+    }
+
+    ret = avformat_alloc_output_context2(&ofmt_ctx, hls_output_format, "hls", master_playlist_path);
     if (ret < 0 || !ofmt_ctx) {
         av_log(NULL, AV_LOG_ERROR, "transmux: avformat_alloc_output_context2 failed, ret=%d\n", ret);
         ret = -5;
