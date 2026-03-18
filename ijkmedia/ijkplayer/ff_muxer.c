@@ -62,12 +62,44 @@ static int fs_contains_ignore_case(const char *text, const char *keyword)
     return strcasestr(text, keyword) != NULL;
 }
 
+static int fs_is_commentary_like(const char *text)
+{
+    return fs_contains_ignore_case(text, "commentary") ||
+           fs_contains_ignore_case(text, "description") ||
+           fs_contains_ignore_case(text, "narration");
+}
+
+static int fs_audio_codec_priority(enum AVCodecID codec_id)
+{
+    switch (codec_id) {
+        case AV_CODEC_ID_EAC3:
+            return 600;
+        case AV_CODEC_ID_AC3:
+            return 520;
+        case AV_CODEC_ID_AAC:
+            return 500;
+#ifdef AV_CODEC_ID_AAC_LATM
+        case AV_CODEC_ID_AAC_LATM:
+            return 500;
+#endif
+        case AV_CODEC_ID_MP3:
+            return 420;
+        case AV_CODEC_ID_ALAC:
+            return 400;
+        default:
+            return 0;
+    }
+}
+
 static int fs_pick_audio_stream(const AVFormatContext *ifmt_ctx)
 {
     if (!ifmt_ctx) {
         return -1;
     }
     int fallback_audio = -1;
+    int best_audio = -1;
+    int best_score = INT_MIN;
+
     for (unsigned int i = 0; i < ifmt_ctx->nb_streams; i++) {
         const AVStream *stream = ifmt_ctx->streams[i];
         if (!stream || !stream->codecpar || stream->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) {
@@ -76,17 +108,38 @@ static int fs_pick_audio_stream(const AVFormatContext *ifmt_ctx)
         if (fallback_audio < 0) {
             fallback_audio = (int)i;
         }
-        if (stream->codecpar->codec_id != AV_CODEC_ID_EAC3) {
-            continue;
-        }
+
         AVDictionaryEntry *title = av_dict_get(stream->metadata, "title", NULL, AV_DICT_IGNORE_SUFFIX);
         AVDictionaryEntry *handler = av_dict_get(stream->metadata, "handler_name", NULL, AV_DICT_IGNORE_SUFFIX);
         const char *title_value = title ? title->value : NULL;
         const char *handler_value = handler ? handler->value : NULL;
-        if (fs_contains_ignore_case(title_value, "joc") || fs_contains_ignore_case(title_value, "atmos") ||
-            fs_contains_ignore_case(handler_value, "joc") || fs_contains_ignore_case(handler_value, "atmos")) {
-            return (int)i;
+
+        int score = fs_audio_codec_priority(stream->codecpar->codec_id);
+        if (score == 0) {
+            // TrueHD / DTS / FLAC in HLS fMP4 often yields silent playback on AVPlayer.
+            score = -200;
         }
+
+        if (stream->codecpar->codec_id == AV_CODEC_ID_EAC3 &&
+            (fs_contains_ignore_case(title_value, "joc") || fs_contains_ignore_case(title_value, "atmos") ||
+             fs_contains_ignore_case(handler_value, "joc") || fs_contains_ignore_case(handler_value, "atmos"))) {
+            score += 260;
+        }
+
+        if (fs_is_commentary_like(title_value) || fs_is_commentary_like(handler_value)) {
+            score -= 120;
+        }
+
+        // Prefer earlier streams when scores tie.
+        score -= (int)i;
+        if (score > best_score) {
+            best_score = score;
+            best_audio = (int)i;
+        }
+    }
+
+    if (best_audio >= 0 && best_score > -200) {
+        return best_audio;
     }
     return fallback_audio;
 }
