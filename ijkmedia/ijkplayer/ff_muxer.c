@@ -24,6 +24,7 @@
 #include "ff_ffplay_def.h"
 #include "ff_packet_list.h"
 #include <limits.h>
+#include <string.h>
 #include <strings.h>
 
 typedef struct FSMuxer {
@@ -52,6 +53,64 @@ static int fs_pick_video_stream(const AVFormatContext *ifmt_ctx)
         }
     }
     return -1;
+}
+
+static int fs_stream_has_dovi_conf(const AVStream *stream)
+{
+#ifdef AV_PKT_DATA_DOVI_CONF
+    int side_data_size = 0;
+    if (!stream) {
+        return 0;
+    }
+    return av_stream_get_side_data((AVStream *)stream, AV_PKT_DATA_DOVI_CONF, &side_data_size) != NULL &&
+           side_data_size > 0;
+#else
+    (void)stream;
+    return 0;
+#endif
+}
+
+static void fs_copy_stream_side_data(const AVStream *in_stream, AVStream *out_stream)
+{
+    if (!in_stream || !out_stream) {
+        return;
+    }
+#ifdef AV_PKT_DATA_DOVI_CONF
+    {
+        int side_data_size = 0;
+        const uint8_t *src = av_stream_get_side_data((AVStream *)in_stream, AV_PKT_DATA_DOVI_CONF, &side_data_size);
+        if (src && side_data_size > 0) {
+            uint8_t *dst = av_stream_new_side_data(out_stream, AV_PKT_DATA_DOVI_CONF, side_data_size);
+            if (dst) {
+                memcpy(dst, src, (size_t)side_data_size);
+            }
+        }
+    }
+#endif
+#ifdef AV_PKT_DATA_MASTERING_DISPLAY_METADATA
+    {
+        int side_data_size = 0;
+        const uint8_t *src = av_stream_get_side_data((AVStream *)in_stream, AV_PKT_DATA_MASTERING_DISPLAY_METADATA, &side_data_size);
+        if (src && side_data_size > 0) {
+            uint8_t *dst = av_stream_new_side_data(out_stream, AV_PKT_DATA_MASTERING_DISPLAY_METADATA, side_data_size);
+            if (dst) {
+                memcpy(dst, src, (size_t)side_data_size);
+            }
+        }
+    }
+#endif
+#ifdef AV_PKT_DATA_CONTENT_LIGHT_LEVEL
+    {
+        int side_data_size = 0;
+        const uint8_t *src = av_stream_get_side_data((AVStream *)in_stream, AV_PKT_DATA_CONTENT_LIGHT_LEVEL, &side_data_size);
+        if (src && side_data_size > 0) {
+            uint8_t *dst = av_stream_new_side_data(out_stream, AV_PKT_DATA_CONTENT_LIGHT_LEVEL, side_data_size);
+            if (dst) {
+                memcpy(dst, src, (size_t)side_data_size);
+            }
+        }
+    }
+#endif
 }
 
 static int fs_contains_ignore_case(const char *text, const char *keyword)
@@ -246,8 +305,13 @@ int ff_transmux_to_hls_fmp4(
             ret = -8;
             goto end;
         }
+        fs_copy_stream_side_data(in_stream, out_stream);
         if (out_stream->codecpar->codec_id == AV_CODEC_ID_HEVC) {
-            out_stream->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1');
+            if (fs_stream_has_dovi_conf(in_stream)) {
+                out_stream->codecpar->codec_tag = MKTAG('d', 'v', 'h', '1');
+            } else {
+                out_stream->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1');
+            }
         } else {
             out_stream->codecpar->codec_tag = 0;
         }
@@ -275,6 +339,33 @@ int ff_transmux_to_hls_fmp4(
     av_dict_set(&out_opts, "hls_fmp4_init_filename", "init.mp4", 0);
     av_dict_set(&out_opts, "hls_segment_filename", segment_filename_pattern, 0);
     av_dict_set(&out_opts, "strict", "unofficial", 0);
+    av_dict_set(&out_opts, "hls_segment_options", "strict=unofficial:movflags=+frag_keyframe+default_base_moof+delay_moov:write_colr=1", 0);
+
+    if (video_stream >= 0) {
+        AVStream *selected_video = ifmt_ctx->streams[video_stream];
+        const char *video_codec_name = selected_video && selected_video->codecpar
+            ? avcodec_get_name(selected_video->codecpar->codec_id)
+            : "unknown";
+        int has_dovi = fs_stream_has_dovi_conf(selected_video);
+        av_log(
+            NULL,
+            AV_LOG_INFO,
+            "transmux: selected video stream=%d codec=%s dovi=%d tag=%s\n",
+            video_stream,
+            video_codec_name,
+            has_dovi,
+            has_dovi ? "dvh1" : "hvc1"
+        );
+    }
+    if (audio_stream >= 0) {
+        AVStream *selected_audio = ifmt_ctx->streams[audio_stream];
+        const char *audio_codec_name = selected_audio && selected_audio->codecpar
+            ? avcodec_get_name(selected_audio->codecpar->codec_id)
+            : "unknown";
+        av_log(NULL, AV_LOG_INFO, "transmux: selected audio stream=%d codec=%s\n", audio_stream, audio_codec_name);
+    } else {
+        av_log(NULL, AV_LOG_WARNING, "transmux: no audio stream selected for avplayer hls bridge\n");
+    }
 
     ret = avformat_write_header(ofmt_ctx, &out_opts);
     av_dict_free(&out_opts);
