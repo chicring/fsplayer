@@ -23,7 +23,9 @@
 #include "ff_muxer.h"
 #include "ff_ffplay_def.h"
 #include "ff_packet_list.h"
+#include "libavutil/audio_fifo.h"
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
@@ -42,6 +44,18 @@ typedef struct FSMuxer {
 } FSMuxer;
 
 static int fs_stream_has_dovi_conf(const AVStream *stream);
+
+typedef struct FSAudioTranscodeContext {
+    int enabled;
+    int in_stream_index;
+    int out_stream_index;
+    int64_t next_pts;
+    AVCodecContext *decoder;
+    AVCodecContext *encoder;
+    SwrContext *swr;
+    AVAudioFifo *fifo;
+    AVFrame *decode_frame;
+} FSAudioTranscodeContext;
 
 static int fs_video_codec_priority(enum AVCodecID codec_id)
 {
@@ -284,6 +298,574 @@ static int fs_count_audio_streams(const AVFormatContext *ifmt_ctx)
     return count;
 }
 
+static int fs_pick_any_audio_stream(const AVFormatContext *ifmt_ctx)
+{
+    if (!ifmt_ctx) {
+        return -1;
+    }
+    int fallback_audio = -1;
+    int best_audio = -1;
+    int best_score = INT_MIN;
+
+    for (unsigned int i = 0; i < ifmt_ctx->nb_streams; i++) {
+        const AVStream *stream = ifmt_ctx->streams[i];
+        if (!stream || !stream->codecpar || stream->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) {
+            continue;
+        }
+        if (fallback_audio < 0) {
+            fallback_audio = (int)i;
+        }
+
+        AVDictionaryEntry *title = av_dict_get(stream->metadata, "title", NULL, AV_DICT_IGNORE_SUFFIX);
+        AVDictionaryEntry *handler = av_dict_get(stream->metadata, "handler_name", NULL, AV_DICT_IGNORE_SUFFIX);
+        const char *title_value = title ? title->value : NULL;
+        const char *handler_value = handler ? handler->value : NULL;
+
+        int score = fs_audio_codec_priority(stream->codecpar->codec_id);
+        if (score == 0) {
+            // Unsupported codecs still remain candidates for AAC fallback.
+            score = 360;
+        }
+        if (stream->disposition & AV_DISPOSITION_DEFAULT) {
+            score += 40;
+        }
+        if (stream->codecpar->codec_id == AV_CODEC_ID_EAC3 &&
+            (fs_contains_ignore_case(title_value, "joc") || fs_contains_ignore_case(title_value, "atmos") ||
+             fs_contains_ignore_case(handler_value, "joc") || fs_contains_ignore_case(handler_value, "atmos"))) {
+            score += 260;
+        }
+        if (fs_is_commentary_like(title_value) || fs_is_commentary_like(handler_value)) {
+            score -= 120;
+        }
+        score -= (int)i;
+
+        if (score > best_score) {
+            best_score = score;
+            best_audio = (int)i;
+        }
+    }
+
+    return best_audio >= 0 ? best_audio : fallback_audio;
+}
+
+static int fs_select_encoder_sample_rate(const AVCodec *encoder, int preferred_sample_rate)
+{
+    int fallback = preferred_sample_rate > 0 ? preferred_sample_rate : 48000;
+    if (!encoder || !encoder->supported_samplerates || encoder->supported_samplerates[0] <= 0) {
+        return fallback;
+    }
+
+    int best = encoder->supported_samplerates[0];
+    int best_delta = abs(best - fallback);
+    for (const int *rate = encoder->supported_samplerates; *rate; rate++) {
+        int delta = abs(*rate - fallback);
+        if (delta < best_delta) {
+            best = *rate;
+            best_delta = delta;
+        }
+    }
+    return best;
+}
+
+static enum AVSampleFormat fs_select_encoder_sample_fmt(const AVCodec *encoder)
+{
+    if (encoder && encoder->sample_fmts && encoder->sample_fmts[0] != AV_SAMPLE_FMT_NONE) {
+        return encoder->sample_fmts[0];
+    }
+    return AV_SAMPLE_FMT_FLTP;
+}
+
+static void fs_release_audio_transcode_context(FSAudioTranscodeContext *ctx)
+{
+    if (!ctx) {
+        return;
+    }
+    if (ctx->decode_frame) {
+        av_frame_free(&ctx->decode_frame);
+    }
+    if (ctx->fifo) {
+        av_audio_fifo_free(ctx->fifo);
+    }
+    if (ctx->swr) {
+        swr_free(&ctx->swr);
+    }
+    if (ctx->decoder) {
+        avcodec_free_context(&ctx->decoder);
+    }
+    if (ctx->encoder) {
+        avcodec_free_context(&ctx->encoder);
+    }
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->in_stream_index = -1;
+    ctx->out_stream_index = -1;
+}
+
+static int fs_init_audio_transcode_context(
+    FSAudioTranscodeContext *ctx,
+    AVFormatContext *ifmt_ctx,
+    AVFormatContext *ofmt_ctx,
+    int in_stream_index,
+    AVStream *out_stream
+)
+{
+    if (!ctx || !ifmt_ctx || !ofmt_ctx || !out_stream ||
+        in_stream_index < 0 || (unsigned int)in_stream_index >= ifmt_ctx->nb_streams) {
+        return AVERROR(EINVAL);
+    }
+
+    fs_release_audio_transcode_context(ctx);
+    const AVStream *in_stream = ifmt_ctx->streams[in_stream_index];
+    if (!in_stream || !in_stream->codecpar) {
+        return AVERROR(EINVAL);
+    }
+
+    const AVCodec *decoder = avcodec_find_decoder(in_stream->codecpar->codec_id);
+    const AVCodec *encoder = avcodec_find_encoder(AV_CODEC_ID_AAC);
+    if (!decoder || !encoder) {
+        return AVERROR_ENCODER_NOT_FOUND;
+    }
+
+    ctx->decoder = avcodec_alloc_context3(decoder);
+    if (!ctx->decoder) {
+        return AVERROR(ENOMEM);
+    }
+    int ret = avcodec_parameters_to_context(ctx->decoder, in_stream->codecpar);
+    if (ret < 0) {
+        return ret;
+    }
+    ctx->decoder->pkt_timebase = in_stream->time_base;
+    ret = avcodec_open2(ctx->decoder, decoder, NULL);
+    if (ret < 0) {
+        return ret;
+    }
+
+    ctx->encoder = avcodec_alloc_context3(encoder);
+    if (!ctx->encoder) {
+        return AVERROR(ENOMEM);
+    }
+    int preferred_sample_rate = in_stream->codecpar->sample_rate > 0
+        ? in_stream->codecpar->sample_rate
+        : (ctx->decoder->sample_rate > 0 ? ctx->decoder->sample_rate : 48000);
+    int output_sample_rate = fs_select_encoder_sample_rate(encoder, preferred_sample_rate);
+
+    int input_channels = in_stream->codecpar->ch_layout.nb_channels > 0
+        ? in_stream->codecpar->ch_layout.nb_channels
+        : (ctx->decoder->ch_layout.nb_channels > 0 ? ctx->decoder->ch_layout.nb_channels : 2);
+    int output_channels = input_channels <= 1 ? 1 : 2;
+
+    av_channel_layout_default(&ctx->encoder->ch_layout, output_channels);
+    ctx->encoder->sample_rate = output_sample_rate;
+    ctx->encoder->sample_fmt = fs_select_encoder_sample_fmt(encoder);
+    ctx->encoder->time_base = (AVRational){1, output_sample_rate};
+    ctx->encoder->bit_rate = output_channels > 1 ? 192000 : 128000;
+    if (ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER) {
+        ctx->encoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    }
+    ret = avcodec_open2(ctx->encoder, encoder, NULL);
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = avcodec_parameters_from_context(out_stream->codecpar, ctx->encoder);
+    if (ret < 0) {
+        return ret;
+    }
+    out_stream->codecpar->codec_tag = 0;
+    out_stream->time_base = ctx->encoder->time_base;
+
+    int initial_capacity = FFMAX(ctx->encoder->frame_size > 0 ? ctx->encoder->frame_size * 8 : 4096, 2048);
+    ctx->fifo = av_audio_fifo_alloc(ctx->encoder->sample_fmt, ctx->encoder->ch_layout.nb_channels, initial_capacity);
+    if (!ctx->fifo) {
+        return AVERROR(ENOMEM);
+    }
+    ctx->decode_frame = av_frame_alloc();
+    if (!ctx->decode_frame) {
+        return AVERROR(ENOMEM);
+    }
+
+    ctx->enabled = 1;
+    ctx->in_stream_index = in_stream_index;
+    ctx->out_stream_index = out_stream->index;
+    ctx->next_pts = 0;
+    return 0;
+}
+
+static int fs_ensure_audio_swr(FSAudioTranscodeContext *ctx, const AVFrame *decoded_frame)
+{
+    if (!ctx || !ctx->enabled || !ctx->encoder || !decoded_frame) {
+        return AVERROR(EINVAL);
+    }
+    if (ctx->swr) {
+        return 0;
+    }
+
+    AVChannelLayout source_layout = {0};
+    int source_sample_rate = decoded_frame->sample_rate > 0
+        ? decoded_frame->sample_rate
+        : (ctx->decoder->sample_rate > 0 ? ctx->decoder->sample_rate : ctx->encoder->sample_rate);
+    enum AVSampleFormat source_sample_fmt = decoded_frame->format != AV_SAMPLE_FMT_NONE
+        ? (enum AVSampleFormat)decoded_frame->format
+        : (ctx->decoder->sample_fmt != AV_SAMPLE_FMT_NONE ? ctx->decoder->sample_fmt : AV_SAMPLE_FMT_FLTP);
+
+    if (decoded_frame->ch_layout.nb_channels > 0) {
+        if (av_channel_layout_copy(&source_layout, &decoded_frame->ch_layout) < 0) {
+            return AVERROR(EINVAL);
+        }
+    } else if (ctx->decoder->ch_layout.nb_channels > 0) {
+        if (av_channel_layout_copy(&source_layout, &ctx->decoder->ch_layout) < 0) {
+            return AVERROR(EINVAL);
+        }
+    } else {
+        av_channel_layout_default(&source_layout, ctx->encoder->ch_layout.nb_channels > 0 ? ctx->encoder->ch_layout.nb_channels : 2);
+    }
+
+    int ret = swr_alloc_set_opts2(
+        &ctx->swr,
+        &ctx->encoder->ch_layout,
+        ctx->encoder->sample_fmt,
+        ctx->encoder->sample_rate,
+        &source_layout,
+        source_sample_fmt,
+        source_sample_rate,
+        0,
+        NULL
+    );
+    av_channel_layout_uninit(&source_layout);
+    if (ret < 0) {
+        return ret;
+    }
+    return swr_init(ctx->swr);
+}
+
+static int fs_drain_audio_encoder_packets(FSAudioTranscodeContext *ctx, AVFormatContext *ofmt_ctx)
+{
+    if (!ctx || !ctx->enabled || !ctx->encoder || !ofmt_ctx ||
+        ctx->out_stream_index < 0 || (unsigned int)ctx->out_stream_index >= ofmt_ctx->nb_streams) {
+        return AVERROR(EINVAL);
+    }
+
+    AVPacket packet;
+    av_init_packet(&packet);
+    while (1) {
+        int ret = avcodec_receive_packet(ctx->encoder, &packet);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+            return 0;
+        }
+        if (ret < 0) {
+            return ret;
+        }
+
+        packet.stream_index = ctx->out_stream_index;
+        packet.pos = -1;
+        if (packet.duration <= 0) {
+            packet.duration = 1;
+        }
+        av_packet_rescale_ts(
+            &packet,
+            ctx->encoder->time_base,
+            ofmt_ctx->streams[ctx->out_stream_index]->time_base
+        );
+        ret = av_interleaved_write_frame(ofmt_ctx, &packet);
+        av_packet_unref(&packet);
+        if (ret < 0) {
+            return ret;
+        }
+    }
+}
+
+static int fs_encode_audio_fifo_frame(
+    FSAudioTranscodeContext *ctx,
+    AVFormatContext *ofmt_ctx,
+    int target_samples,
+    int pad_silence
+)
+{
+    if (!ctx || !ctx->enabled || !ctx->encoder || !ctx->fifo || target_samples <= 0) {
+        return AVERROR(EINVAL);
+    }
+
+    AVFrame *frame = av_frame_alloc();
+    if (!frame) {
+        return AVERROR(ENOMEM);
+    }
+
+    frame->format = ctx->encoder->sample_fmt;
+    frame->sample_rate = ctx->encoder->sample_rate;
+    if (av_channel_layout_copy(&frame->ch_layout, &ctx->encoder->ch_layout) < 0) {
+        av_frame_free(&frame);
+        return AVERROR(EINVAL);
+    }
+    frame->nb_samples = target_samples;
+    if (av_frame_get_buffer(frame, 0) < 0) {
+        av_frame_free(&frame);
+        return AVERROR(ENOMEM);
+    }
+
+    int available = av_audio_fifo_size(ctx->fifo);
+    int read_samples = FFMIN(target_samples, available);
+    if (read_samples > 0) {
+        int read_count = av_audio_fifo_read(ctx->fifo, (void **)frame->data, read_samples);
+        if (read_count != read_samples) {
+            av_frame_free(&frame);
+            return AVERROR(EIO);
+        }
+    }
+
+    if (read_samples < target_samples) {
+        if (!pad_silence) {
+            av_frame_free(&frame);
+            return AVERROR(EAGAIN);
+        }
+        av_samples_set_silence(
+            frame->data,
+            read_samples,
+            target_samples - read_samples,
+            ctx->encoder->ch_layout.nb_channels,
+            ctx->encoder->sample_fmt
+        );
+    }
+
+    frame->pts = ctx->next_pts;
+    ctx->next_pts += target_samples;
+
+    int ret = avcodec_send_frame(ctx->encoder, frame);
+    av_frame_free(&frame);
+    if (ret < 0) {
+        return ret;
+    }
+    return fs_drain_audio_encoder_packets(ctx, ofmt_ctx);
+}
+
+static int fs_queue_converted_audio(FSAudioTranscodeContext *ctx, AVFrame *converted_frame, AVFormatContext *ofmt_ctx)
+{
+    if (!ctx || !ctx->enabled || !ctx->fifo || !converted_frame || converted_frame->nb_samples <= 0) {
+        return AVERROR(EINVAL);
+    }
+
+    int current_size = av_audio_fifo_size(ctx->fifo);
+    if (av_audio_fifo_realloc(ctx->fifo, current_size + converted_frame->nb_samples) < 0) {
+        return AVERROR(ENOMEM);
+    }
+    int write_count = av_audio_fifo_write(ctx->fifo, (void **)converted_frame->data, converted_frame->nb_samples);
+    if (write_count != converted_frame->nb_samples) {
+        return AVERROR(EIO);
+    }
+
+    int frame_size = ctx->encoder->frame_size;
+    if (frame_size <= 0) {
+        while (av_audio_fifo_size(ctx->fifo) > 0) {
+            int chunk = FFMIN(av_audio_fifo_size(ctx->fifo), 2048);
+            int ret = fs_encode_audio_fifo_frame(ctx, ofmt_ctx, chunk, 0);
+            if (ret < 0 && ret != AVERROR(EAGAIN)) {
+                return ret;
+            }
+        }
+        return 0;
+    }
+
+    while (av_audio_fifo_size(ctx->fifo) >= frame_size) {
+        int ret = fs_encode_audio_fifo_frame(ctx, ofmt_ctx, frame_size, 0);
+        if (ret < 0) {
+            return ret;
+        }
+    }
+    return 0;
+}
+
+static int fs_convert_and_queue_audio_frame(
+    FSAudioTranscodeContext *ctx,
+    const AVFrame *decoded_frame,
+    AVFormatContext *ofmt_ctx
+)
+{
+    int ret = fs_ensure_audio_swr(ctx, decoded_frame);
+    if (ret < 0) {
+        return ret;
+    }
+
+    int source_sample_rate = decoded_frame->sample_rate > 0
+        ? decoded_frame->sample_rate
+        : (ctx->decoder->sample_rate > 0 ? ctx->decoder->sample_rate : ctx->encoder->sample_rate);
+    int dst_nb_samples = av_rescale_rnd(
+        swr_get_delay(ctx->swr, source_sample_rate) + decoded_frame->nb_samples,
+        ctx->encoder->sample_rate,
+        source_sample_rate,
+        AV_ROUND_UP
+    );
+    if (dst_nb_samples <= 0) {
+        return 0;
+    }
+
+    AVFrame *converted = av_frame_alloc();
+    if (!converted) {
+        return AVERROR(ENOMEM);
+    }
+    converted->format = ctx->encoder->sample_fmt;
+    converted->sample_rate = ctx->encoder->sample_rate;
+    if (av_channel_layout_copy(&converted->ch_layout, &ctx->encoder->ch_layout) < 0) {
+        av_frame_free(&converted);
+        return AVERROR(EINVAL);
+    }
+    converted->nb_samples = dst_nb_samples;
+    if (av_frame_get_buffer(converted, 0) < 0) {
+        av_frame_free(&converted);
+        return AVERROR(ENOMEM);
+    }
+
+    int converted_samples = swr_convert(
+        ctx->swr,
+        converted->data,
+        dst_nb_samples,
+        (const uint8_t **)decoded_frame->data,
+        decoded_frame->nb_samples
+    );
+    if (converted_samples < 0) {
+        av_frame_free(&converted);
+        return converted_samples;
+    }
+    converted->nb_samples = converted_samples;
+
+    ret = 0;
+    if (converted_samples > 0) {
+        ret = fs_queue_converted_audio(ctx, converted, ofmt_ctx);
+    }
+    av_frame_free(&converted);
+    return ret;
+}
+
+static int fs_process_audio_packet(
+    FSAudioTranscodeContext *ctx,
+    AVPacket *packet,
+    AVFormatContext *ofmt_ctx
+)
+{
+    if (!ctx || !ctx->enabled || !ctx->decoder || !ctx->decode_frame || !packet) {
+        return AVERROR(EINVAL);
+    }
+
+    int ret = avcodec_send_packet(ctx->decoder, packet);
+    if (ret == AVERROR(EAGAIN)) {
+        while ((ret = avcodec_receive_frame(ctx->decoder, ctx->decode_frame)) >= 0) {
+            int convert_ret = fs_convert_and_queue_audio_frame(ctx, ctx->decode_frame, ofmt_ctx);
+            av_frame_unref(ctx->decode_frame);
+            if (convert_ret < 0) {
+                return convert_ret;
+            }
+        }
+        if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
+            return ret;
+        }
+        ret = avcodec_send_packet(ctx->decoder, packet);
+    }
+    if (ret < 0) {
+        return ret;
+    }
+
+    while ((ret = avcodec_receive_frame(ctx->decoder, ctx->decode_frame)) >= 0) {
+        int convert_ret = fs_convert_and_queue_audio_frame(ctx, ctx->decode_frame, ofmt_ctx);
+        av_frame_unref(ctx->decode_frame);
+        if (convert_ret < 0) {
+            return convert_ret;
+        }
+    }
+    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+        return 0;
+    }
+    return ret;
+}
+
+static int fs_flush_audio_transcode(FSAudioTranscodeContext *ctx, AVFormatContext *ofmt_ctx)
+{
+    if (!ctx || !ctx->enabled || !ctx->decoder || !ctx->encoder || !ctx->fifo) {
+        return 0;
+    }
+
+    int ret = avcodec_send_packet(ctx->decoder, NULL);
+    if (ret < 0 && ret != AVERROR_EOF && ret != AVERROR(EAGAIN)) {
+        return ret;
+    }
+    while ((ret = avcodec_receive_frame(ctx->decoder, ctx->decode_frame)) >= 0) {
+        int convert_ret = fs_convert_and_queue_audio_frame(ctx, ctx->decode_frame, ofmt_ctx);
+        av_frame_unref(ctx->decode_frame);
+        if (convert_ret < 0) {
+            return convert_ret;
+        }
+    }
+    if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
+        return ret;
+    }
+
+    if (ctx->swr) {
+        int source_sample_rate = ctx->decoder->sample_rate > 0 ? ctx->decoder->sample_rate : ctx->encoder->sample_rate;
+        int delay = swr_get_delay(ctx->swr, source_sample_rate);
+        if (delay > 0) {
+            int dst_nb_samples = av_rescale_rnd(delay, ctx->encoder->sample_rate, source_sample_rate, AV_ROUND_UP);
+            if (dst_nb_samples > 0) {
+                AVFrame *flush_frame = av_frame_alloc();
+                if (!flush_frame) {
+                    return AVERROR(ENOMEM);
+                }
+                flush_frame->format = ctx->encoder->sample_fmt;
+                flush_frame->sample_rate = ctx->encoder->sample_rate;
+                if (av_channel_layout_copy(&flush_frame->ch_layout, &ctx->encoder->ch_layout) < 0) {
+                    av_frame_free(&flush_frame);
+                    return AVERROR(EINVAL);
+                }
+                flush_frame->nb_samples = dst_nb_samples;
+                if (av_frame_get_buffer(flush_frame, 0) < 0) {
+                    av_frame_free(&flush_frame);
+                    return AVERROR(ENOMEM);
+                }
+                int converted = swr_convert(ctx->swr, flush_frame->data, dst_nb_samples, NULL, 0);
+                if (converted < 0) {
+                    av_frame_free(&flush_frame);
+                    return converted;
+                }
+                flush_frame->nb_samples = converted;
+                if (converted > 0) {
+                    ret = fs_queue_converted_audio(ctx, flush_frame, ofmt_ctx);
+                } else {
+                    ret = 0;
+                }
+                av_frame_free(&flush_frame);
+                if (ret < 0) {
+                    return ret;
+                }
+            }
+        }
+    }
+
+    int frame_size = ctx->encoder->frame_size;
+    if (frame_size <= 0) {
+        while (av_audio_fifo_size(ctx->fifo) > 0) {
+            int chunk = FFMIN(av_audio_fifo_size(ctx->fifo), 2048);
+            ret = fs_encode_audio_fifo_frame(ctx, ofmt_ctx, chunk, 0);
+            if (ret < 0 && ret != AVERROR(EAGAIN)) {
+                return ret;
+            }
+        }
+    } else {
+        while (av_audio_fifo_size(ctx->fifo) >= frame_size) {
+            ret = fs_encode_audio_fifo_frame(ctx, ofmt_ctx, frame_size, 0);
+            if (ret < 0) {
+                return ret;
+            }
+        }
+        if (av_audio_fifo_size(ctx->fifo) > 0) {
+            ret = fs_encode_audio_fifo_frame(ctx, ofmt_ctx, frame_size, 1);
+            if (ret < 0) {
+                return ret;
+            }
+        }
+    }
+
+    ret = avcodec_send_frame(ctx->encoder, NULL);
+    if (ret < 0 && ret != AVERROR_EOF) {
+        return ret;
+    }
+    return fs_drain_audio_encoder_packets(ctx, ofmt_ctx);
+}
+
 int ff_transmux_to_hls_fmp4(
     const char *input_url,
     const char *output_directory,
@@ -302,10 +884,15 @@ int ff_transmux_to_hls_fmp4(
     int *stream_mapping = NULL;
     int video_stream = -1;
     int audio_stream = -1;
+    int any_audio_stream = -1;
+    int audio_transcode_to_aac = 0;
     int video_has_key_written = 0;
     int64_t *last_dts_per_stream = NULL;
     int synthesized_ts_count = 0;
     int dropped_no_ts_count = 0;
+    FSAudioTranscodeContext audio_transcode = {0};
+    audio_transcode.in_stream_index = -1;
+    audio_transcode.out_stream_index = -1;
 
     if (!input_url || !*input_url || !output_directory || !*output_directory) {
         return -1;
@@ -340,6 +927,7 @@ int ff_transmux_to_hls_fmp4(
 
     video_stream = fs_pick_video_stream(ifmt_ctx);
     audio_stream = fs_pick_audio_stream(ifmt_ctx);
+    any_audio_stream = fs_pick_any_audio_stream(ifmt_ctx);
     const int audio_stream_count = fs_count_audio_streams(ifmt_ctx);
     if (video_stream < 0) {
         av_log(NULL, AV_LOG_ERROR, "transmux: no video stream\n");
@@ -347,9 +935,15 @@ int ff_transmux_to_hls_fmp4(
         goto end;
     }
     if (audio_stream_count > 0 && audio_stream < 0) {
-        av_log(NULL, AV_LOG_ERROR, "transmux: no avplayer-compatible audio stream (total_audio=%d)\n", audio_stream_count);
-        ret = -16;
-        goto end;
+        if (any_audio_stream >= 0) {
+            audio_stream = any_audio_stream;
+            audio_transcode_to_aac = 1;
+            av_log(NULL, AV_LOG_WARNING, "transmux: no compatible copy-audio, enable AAC fallback stream=%d total_audio=%d\n", audio_stream, audio_stream_count);
+        } else {
+            av_log(NULL, AV_LOG_ERROR, "transmux: no avplayer-compatible audio stream (total_audio=%d)\n", audio_stream_count);
+            ret = -16;
+            goto end;
+        }
     }
 
     char master_playlist_path[PATH_MAX] = {0};
@@ -392,6 +986,22 @@ int ff_transmux_to_hls_fmp4(
         if (!in_stream || !out_stream) {
             ret = -7;
             goto end;
+        }
+        if ((int)i == audio_stream && audio_transcode_to_aac) {
+            ret = fs_init_audio_transcode_context(
+                &audio_transcode,
+                ifmt_ctx,
+                ofmt_ctx,
+                (int)i,
+                out_stream
+            );
+            if (ret < 0) {
+                av_log(NULL, AV_LOG_ERROR, "transmux: init AAC fallback failed, ret=%d\n", ret);
+                ret = -17;
+                goto end;
+            }
+            stream_mapping[i] = out_stream->index;
+            continue;
         }
         ret = avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
         if (ret < 0) {
@@ -469,7 +1079,14 @@ int ff_transmux_to_hls_fmp4(
         const char *audio_codec_name = selected_audio && selected_audio->codecpar
             ? avcodec_get_name(selected_audio->codecpar->codec_id)
             : "unknown";
-        av_log(NULL, AV_LOG_INFO, "transmux: selected audio stream=%d codec=%s\n", audio_stream, audio_codec_name);
+        av_log(
+            NULL,
+            AV_LOG_INFO,
+            "transmux: selected audio stream=%d codec=%s mode=%s\n",
+            audio_stream,
+            audio_codec_name,
+            audio_transcode_to_aac ? "aac_fallback" : "copy"
+        );
     } else {
         av_log(NULL, AV_LOG_WARNING, "transmux: no audio stream selected for avplayer hls bridge\n");
     }
@@ -521,6 +1138,16 @@ int ff_transmux_to_hls_fmp4(
 
         AVStream *in_stream = ifmt_ctx->streams[input_stream_index];
         AVStream *out_stream = ofmt_ctx->streams[mapped_index];
+        if (audio_transcode.enabled && input_stream_index == audio_stream) {
+            ret = fs_process_audio_packet(&audio_transcode, &packet, ofmt_ctx);
+            av_packet_unref(&packet);
+            if (ret < 0) {
+                av_log(NULL, AV_LOG_ERROR, "transmux: AAC fallback audio processing failed, ret=%d\n", ret);
+                ret = -20;
+                goto end;
+            }
+            continue;
+        }
         if (packet.pts == AV_NOPTS_VALUE && packet.dts == AV_NOPTS_VALUE) {
             if ((unsigned int)mapped_index < ofmt_ctx->nb_streams &&
                 last_dts_per_stream &&
@@ -595,6 +1222,14 @@ int ff_transmux_to_hls_fmp4(
         ret = -12;
         goto end;
     }
+    if (audio_transcode.enabled) {
+        ret = fs_flush_audio_transcode(&audio_transcode, ofmt_ctx);
+        if (ret < 0) {
+            av_log(NULL, AV_LOG_ERROR, "transmux: AAC fallback flush failed, ret=%d\n", ret);
+            ret = -21;
+            goto end;
+        }
+    }
     ret = av_write_trailer(ofmt_ctx);
     if (ret < 0) {
         ret = -13;
@@ -627,6 +1262,7 @@ end:
     if (last_dts_per_stream) {
         av_freep(&last_dts_per_stream);
     }
+    fs_release_audio_transcode_context(&audio_transcode);
     return ret;
 }
 

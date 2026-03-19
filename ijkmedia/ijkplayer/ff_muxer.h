@@ -37,7 +37,7 @@ int ff_write_video_muxer(void *ffr, struct AVPacket *packet);
 void ff_stop_muxer(void *ffr);
 int ff_destroy_muxer(void **ffr);
 
-/* transmux input media into local HLS(fMP4) without re-encode */
+/* transmux input media into local HLS(fMP4), with optional audio AAC fallback when copy is unsupported */
 int ff_transmux_to_hls_fmp4(
     const char *input_url,
     const char *output_directory,
