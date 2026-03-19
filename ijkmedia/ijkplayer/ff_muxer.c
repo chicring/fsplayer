@@ -145,8 +145,21 @@ static int fs_stream_has_dovi_conf(const AVStream *stream)
     if (!stream) {
         return 0;
     }
-    return av_stream_get_side_data((AVStream *)stream, AV_PKT_DATA_DOVI_CONF, &side_data_size) != NULL &&
-           side_data_size > 0;
+    {
+        const uint8_t *side_data = av_stream_get_side_data((AVStream *)stream, AV_PKT_DATA_DOVI_CONF, &side_data_size);
+        if (side_data && side_data_size > 0) {
+            return 1;
+        }
+    }
+    if (stream->codecpar && stream->codecpar->coded_side_data && stream->codecpar->nb_coded_side_data > 0) {
+        for (int i = 0; i < stream->codecpar->nb_coded_side_data; i++) {
+            const AVPacketSideData *entry = &stream->codecpar->coded_side_data[i];
+            if (entry->type == AV_PKT_DATA_DOVI_CONF && entry->data && entry->size > 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
 #else
     (void)stream;
     return 0;
@@ -162,6 +175,17 @@ static void fs_copy_stream_side_data(const AVStream *in_stream, AVStream *out_st
     {
         int side_data_size = 0;
         const uint8_t *src = av_stream_get_side_data((AVStream *)in_stream, AV_PKT_DATA_DOVI_CONF, &side_data_size);
+        if ((!src || side_data_size <= 0) && in_stream->codecpar &&
+            in_stream->codecpar->coded_side_data && in_stream->codecpar->nb_coded_side_data > 0) {
+            for (int i = 0; i < in_stream->codecpar->nb_coded_side_data; i++) {
+                const AVPacketSideData *entry = &in_stream->codecpar->coded_side_data[i];
+                if (entry->type == AV_PKT_DATA_DOVI_CONF && entry->data && entry->size > 0) {
+                    src = entry->data;
+                    side_data_size = entry->size;
+                    break;
+                }
+            }
+        }
         if (src && side_data_size > 0) {
             uint8_t *dst = av_stream_new_side_data(out_stream, AV_PKT_DATA_DOVI_CONF, side_data_size);
             if (dst) {
@@ -174,6 +198,17 @@ static void fs_copy_stream_side_data(const AVStream *in_stream, AVStream *out_st
     {
         int side_data_size = 0;
         const uint8_t *src = av_stream_get_side_data((AVStream *)in_stream, AV_PKT_DATA_MASTERING_DISPLAY_METADATA, &side_data_size);
+        if ((!src || side_data_size <= 0) && in_stream->codecpar &&
+            in_stream->codecpar->coded_side_data && in_stream->codecpar->nb_coded_side_data > 0) {
+            for (int i = 0; i < in_stream->codecpar->nb_coded_side_data; i++) {
+                const AVPacketSideData *entry = &in_stream->codecpar->coded_side_data[i];
+                if (entry->type == AV_PKT_DATA_MASTERING_DISPLAY_METADATA && entry->data && entry->size > 0) {
+                    src = entry->data;
+                    side_data_size = entry->size;
+                    break;
+                }
+            }
+        }
         if (src && side_data_size > 0) {
             uint8_t *dst = av_stream_new_side_data(out_stream, AV_PKT_DATA_MASTERING_DISPLAY_METADATA, side_data_size);
             if (dst) {
@@ -186,6 +221,17 @@ static void fs_copy_stream_side_data(const AVStream *in_stream, AVStream *out_st
     {
         int side_data_size = 0;
         const uint8_t *src = av_stream_get_side_data((AVStream *)in_stream, AV_PKT_DATA_CONTENT_LIGHT_LEVEL, &side_data_size);
+        if ((!src || side_data_size <= 0) && in_stream->codecpar &&
+            in_stream->codecpar->coded_side_data && in_stream->codecpar->nb_coded_side_data > 0) {
+            for (int i = 0; i < in_stream->codecpar->nb_coded_side_data; i++) {
+                const AVPacketSideData *entry = &in_stream->codecpar->coded_side_data[i];
+                if (entry->type == AV_PKT_DATA_CONTENT_LIGHT_LEVEL && entry->data && entry->size > 0) {
+                    src = entry->data;
+                    side_data_size = entry->size;
+                    break;
+                }
+            }
+        }
         if (src && side_data_size > 0) {
             uint8_t *dst = av_stream_new_side_data(out_stream, AV_PKT_DATA_CONTENT_LIGHT_LEVEL, side_data_size);
             if (dst) {
