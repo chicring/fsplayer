@@ -211,11 +211,9 @@ static int fs_audio_codec_priority(enum AVCodecID codec_id)
         case AV_CODEC_ID_AAC_LATM:
             return 520;
 #endif
-        case AV_CODEC_ID_MP3:
-            return 420;
-        case AV_CODEC_ID_ALAC:
-            return 400;
         default:
+            // HLS fMP4 + AVPlayer bridge: prefer codecs that are consistently
+            // playable in this path; others should go through AAC fallback.
             return 0;
     }
 }
