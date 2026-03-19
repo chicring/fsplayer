@@ -378,7 +378,7 @@ int ff_transmux_to_hls_fmp4(
         fs_copy_stream_side_data(in_stream, out_stream);
         if (out_stream->codecpar->codec_id == AV_CODEC_ID_HEVC) {
             const int has_dovi = fs_stream_has_dovi_conf(in_stream);
-            const int should_use_dolby_tag = has_dovi || prefer_dolby_vision;
+            const int should_use_dolby_tag = has_dovi && prefer_dolby_vision;
             if (should_use_dolby_tag) {
                 out_stream->codecpar->codec_tag = MKTAG('d', 'v', 'h', '1');
                 // Some MKV Dolby streams miss explicit color fields. Fill safe PQ/BT.2020 defaults
@@ -421,7 +421,7 @@ int ff_transmux_to_hls_fmp4(
     av_dict_set(&out_opts, "hls_playlist_type", "event", 0);
     av_dict_set(&out_opts, "hls_list_size", "0", 0);
     av_dict_set(&out_opts, "hls_segment_type", "fmp4", 0);
-    av_dict_set(&out_opts, "hls_flags", "independent_segments+temp_file", 0);
+    av_dict_set(&out_opts, "hls_flags", "independent_segments", 0);
     av_dict_set(&out_opts, "hls_fmp4_init_filename", "init.mp4", 0);
     av_dict_set(&out_opts, "hls_segment_filename", segment_filename_pattern, 0);
     av_dict_set(&out_opts, "strict", "unofficial", 0);
@@ -445,7 +445,7 @@ int ff_transmux_to_hls_fmp4(
             video_codec_name,
             has_dovi,
             prefer_dolby_vision ? 1 : 0,
-            (has_dovi || prefer_dolby_vision) ? "dvh1" : "hvc1",
+            (has_dovi && prefer_dolby_vision) ? "dvh1" : "hvc1",
             selected_video && selected_video->codecpar ? selected_video->codecpar->color_range : -1,
             selected_video && selected_video->codecpar ? selected_video->codecpar->color_primaries : -1,
             selected_video && selected_video->codecpar ? selected_video->codecpar->color_trc : -1,
