@@ -57,6 +57,19 @@ typedef struct FSAudioTranscodeContext {
     AVFrame *decode_frame;
 } FSAudioTranscodeContext;
 
+typedef struct FSTransmuxInterruptContext {
+    const atomic_int *cancel_flag;
+} FSTransmuxInterruptContext;
+
+static int fs_transmux_interrupt_cb(void *opaque)
+{
+    FSTransmuxInterruptContext *context = (FSTransmuxInterruptContext *)opaque;
+    if (!context || !context->cancel_flag) {
+        return 0;
+    }
+    return atomic_load(context->cancel_flag) ? 1 : 0;
+}
+
 static int fs_video_codec_priority(enum AVCodecID codec_id)
 {
     switch (codec_id) {
@@ -181,6 +194,31 @@ static void fs_copy_stream_side_data(const AVStream *in_stream, AVStream *out_st
         }
     }
 #endif
+}
+
+static int fs_apply_hdr_color_fallback(AVCodecParameters *codecpar)
+{
+    int changed = 0;
+    if (!codecpar) {
+        return 0;
+    }
+    if (codecpar->color_primaries == AVCOL_PRI_UNSPECIFIED) {
+        codecpar->color_primaries = AVCOL_PRI_BT2020;
+        changed = 1;
+    }
+    if (codecpar->color_trc == AVCOL_TRC_UNSPECIFIED) {
+        codecpar->color_trc = AVCOL_TRC_SMPTE2084;
+        changed = 1;
+    }
+    if (codecpar->color_space == AVCOL_SPC_UNSPECIFIED) {
+        codecpar->color_space = AVCOL_SPC_BT2020_NCL;
+        changed = 1;
+    }
+    if (codecpar->color_range == AVCOL_RANGE_UNSPECIFIED) {
+        codecpar->color_range = AVCOL_RANGE_MPEG;
+        changed = 1;
+    }
+    return changed;
 }
 
 static int fs_contains_ignore_case(const char *text, const char *keyword)
@@ -870,7 +908,8 @@ int ff_transmux_to_hls_fmp4(
     const char *headers,
     int segment_duration_sec,
     int timeout_sec,
-    int prefer_dolby_vision
+    int prefer_dolby_vision,
+    const atomic_int *cancel_flag
 )
 {
     int ret = 0;
@@ -889,6 +928,7 @@ int ff_transmux_to_hls_fmp4(
     int synthesized_ts_count = 0;
     int dropped_no_ts_count = 0;
     FSAudioTranscodeContext audio_transcode = {0};
+    FSTransmuxInterruptContext interrupt_context = {0};
     audio_transcode.in_stream_index = -1;
     audio_transcode.out_stream_index = -1;
 
@@ -902,24 +942,45 @@ int ff_transmux_to_hls_fmp4(
     av_dict_set(&in_opts, "fflags", "+genpts", 0);
     av_dict_set(&in_opts, "probesize", "20000000", 0);
     av_dict_set(&in_opts, "analyzeduration", "30000000", 0);
+    av_dict_set(&in_opts, "reconnect", "1", 0);
+    av_dict_set(&in_opts, "reconnect_streamed", "1", 0);
+    av_dict_set(&in_opts, "reconnect_at_eof", "1", 0);
+    av_dict_set(&in_opts, "reconnect_delay_max", "2", 0);
     if (timeout_sec > 0) {
+        int io_timeout_sec = timeout_sec > 10 ? 10 : timeout_sec;
         char timeout_buf[32] = {0};
-        snprintf(timeout_buf, sizeof(timeout_buf), "%lld", (long long)timeout_sec * 1000000LL);
+        snprintf(timeout_buf, sizeof(timeout_buf), "%lld", (long long)io_timeout_sec * 1000000LL);
         av_dict_set(&in_opts, "rw_timeout", timeout_buf, 0);
         av_dict_set(&in_opts, "timeout", timeout_buf, 0);
     }
 
+    ifmt_ctx = avformat_alloc_context();
+    if (!ifmt_ctx) {
+        ret = -18;
+        goto end;
+    }
+    interrupt_context.cancel_flag = cancel_flag;
+    ifmt_ctx->interrupt_callback.callback = fs_transmux_interrupt_cb;
+    ifmt_ctx->interrupt_callback.opaque = &interrupt_context;
     ret = avformat_open_input(&ifmt_ctx, input_url, NULL, &in_opts);
     av_dict_free(&in_opts);
     if (ret < 0) {
         av_log(NULL, AV_LOG_ERROR, "transmux: avformat_open_input failed, ret=%d\n", ret);
-        ret = -2;
+        if (ret == AVERROR_EXIT && cancel_flag && atomic_load(cancel_flag)) {
+            ret = -22;
+        } else {
+            ret = -2;
+        }
         goto end;
     }
     ret = avformat_find_stream_info(ifmt_ctx, NULL);
     if (ret < 0) {
         av_log(NULL, AV_LOG_ERROR, "transmux: avformat_find_stream_info failed, ret=%d\n", ret);
-        ret = -3;
+        if (ret == AVERROR_EXIT && cancel_flag && atomic_load(cancel_flag)) {
+            ret = -22;
+        } else {
+            ret = -3;
+        }
         goto end;
     }
 
@@ -945,12 +1006,14 @@ int ff_transmux_to_hls_fmp4(
     }
 
     char master_playlist_path[PATH_MAX] = {0};
-    char segment_filename_pattern[64] = {0};
+    char segment_filename_pattern[PATH_MAX] = {0};
     snprintf(master_playlist_path, sizeof(master_playlist_path), "%s/master.m3u8", output_directory);
-    // Keep segment URI relative to master playlist, otherwise AVPlayer may resolve
-    // absolute paths outside the local proxy route (`/bridge/<cacheKey>/...`).
+    // Use absolute output path for writer stability on iOS. Relative segment
+    // paths can resolve against the process CWD and fail with "Failed to open file".
+    // The app proxy rewrites absolute local paths back to relative bridge paths
+    // before serving playlists to AVPlayer.
     // snprintf needs escaped '%' here.
-    snprintf(segment_filename_pattern, sizeof(segment_filename_pattern), "segment_%%05d.m4s");
+    snprintf(segment_filename_pattern, sizeof(segment_filename_pattern), "%s/segment_%%05d.m4s", output_directory);
 
     hls_output_format = av_guess_format("hls", NULL, NULL);
     if (!hls_output_format) {
@@ -1008,9 +1071,20 @@ int ff_transmux_to_hls_fmp4(
             goto end;
         }
         fs_copy_stream_side_data(in_stream, out_stream);
+        if ((out_stream->codecpar->codec_id == AV_CODEC_ID_EAC3 ||
+             out_stream->codecpar->codec_id == AV_CODEC_ID_AC3) &&
+            out_stream->codecpar->frame_size <= 0) {
+            out_stream->codecpar->frame_size = 1536;
+        }
         if (out_stream->codecpar->codec_id == AV_CODEC_ID_HEVC) {
             const int has_dovi = fs_stream_has_dovi_conf(in_stream);
             const int should_use_dolby_tag = has_dovi && prefer_dolby_vision;
+            if (prefer_dolby_vision && !has_dovi) {
+                if (fs_apply_hdr_color_fallback(out_stream->codecpar)) {
+                    av_log(NULL, AV_LOG_WARNING,
+                           "transmux: dolby fallback color tags applied (bt2020/pq)\n");
+                }
+            }
             if (should_use_dolby_tag) {
                 out_stream->codecpar->codec_tag = MKTAG('d', 'v', 'h', '1');
             } else {
@@ -1036,10 +1110,12 @@ int ff_transmux_to_hls_fmp4(
     int normalized_segment_duration_sec = segment_duration_sec > 0 ? segment_duration_sec : 4;
     snprintf(hls_time_buf, sizeof(hls_time_buf), "%d", normalized_segment_duration_sec);
     av_dict_set(&out_opts, "hls_time", hls_time_buf, 0);
+    // Use event playlist during transmux so playlist is updated incrementally
+    // and bridge startup can begin before the whole source is processed.
     av_dict_set(&out_opts, "hls_playlist_type", "event", 0);
     av_dict_set(&out_opts, "hls_list_size", "0", 0);
     av_dict_set(&out_opts, "hls_segment_type", "fmp4", 0);
-    av_dict_set(&out_opts, "hls_flags", "independent_segments+append_list", 0);
+    av_dict_set(&out_opts, "hls_flags", "independent_segments+temp_file", 0);
     av_dict_set(&out_opts, "hls_fmp4_init_filename", "init.mp4", 0);
     av_dict_set(&out_opts, "hls_segment_filename", segment_filename_pattern, 0);
     av_dict_set(&out_opts, "strict", "unofficial", 0);
@@ -1111,6 +1187,11 @@ int ff_transmux_to_hls_fmp4(
     AVPacket packet;
     av_init_packet(&packet);
     while ((ret = av_read_frame(ifmt_ctx, &packet)) >= 0) {
+        if (cancel_flag && atomic_load(cancel_flag)) {
+            av_packet_unref(&packet);
+            ret = -22;
+            goto end;
+        }
         int input_stream_index = packet.stream_index;
         int mapped_index = (input_stream_index >= 0 && (unsigned int)input_stream_index < ifmt_ctx->nb_streams)
             ? stream_mapping[input_stream_index]
@@ -1212,6 +1293,10 @@ int ff_transmux_to_hls_fmp4(
             ret = -11;
             goto end;
         }
+    }
+    if (ret == AVERROR_EXIT && cancel_flag && atomic_load(cancel_flag)) {
+        ret = -22;
+        goto end;
     }
     if (ret == AVERROR_EOF) {
         ret = 0;
