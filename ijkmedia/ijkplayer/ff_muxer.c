@@ -266,6 +266,24 @@ static int fs_pick_audio_stream(const AVFormatContext *ifmt_ctx)
     return -1;
 }
 
+static int fs_count_audio_streams(const AVFormatContext *ifmt_ctx)
+{
+    if (!ifmt_ctx) {
+        return 0;
+    }
+    int count = 0;
+    for (unsigned int i = 0; i < ifmt_ctx->nb_streams; i++) {
+        const AVStream *stream = ifmt_ctx->streams[i];
+        if (!stream || !stream->codecpar) {
+            continue;
+        }
+        if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            count++;
+        }
+    }
+    return count;
+}
+
 int ff_transmux_to_hls_fmp4(
     const char *input_url,
     const char *output_directory,
@@ -322,9 +340,15 @@ int ff_transmux_to_hls_fmp4(
 
     video_stream = fs_pick_video_stream(ifmt_ctx);
     audio_stream = fs_pick_audio_stream(ifmt_ctx);
+    const int audio_stream_count = fs_count_audio_streams(ifmt_ctx);
     if (video_stream < 0) {
         av_log(NULL, AV_LOG_ERROR, "transmux: no video stream\n");
         ret = -4;
+        goto end;
+    }
+    if (audio_stream_count > 0 && audio_stream < 0) {
+        av_log(NULL, AV_LOG_ERROR, "transmux: no avplayer-compatible audio stream (total_audio=%d)\n", audio_stream_count);
+        ret = -16;
         goto end;
     }
 
