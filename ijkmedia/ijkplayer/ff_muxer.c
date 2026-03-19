@@ -381,20 +381,6 @@ int ff_transmux_to_hls_fmp4(
             const int should_use_dolby_tag = has_dovi && prefer_dolby_vision;
             if (should_use_dolby_tag) {
                 out_stream->codecpar->codec_tag = MKTAG('d', 'v', 'h', '1');
-                // Some MKV Dolby streams miss explicit color fields. Fill safe PQ/BT.2020 defaults
-                // so fMP4 colr boxes are emitted with expected HDR signaling for AVPlayer.
-                if (out_stream->codecpar->color_primaries == AVCOL_PRI_UNSPECIFIED) {
-                    out_stream->codecpar->color_primaries = AVCOL_PRI_BT2020;
-                }
-                if (out_stream->codecpar->color_trc == AVCOL_TRC_UNSPECIFIED) {
-                    out_stream->codecpar->color_trc = AVCOL_TRC_SMPTE2084;
-                }
-                if (out_stream->codecpar->color_space == AVCOL_SPC_UNSPECIFIED) {
-                    out_stream->codecpar->color_space = AVCOL_SPC_BT2020_NCL;
-                }
-                if (out_stream->codecpar->color_range == AVCOL_RANGE_UNSPECIFIED) {
-                    out_stream->codecpar->color_range = AVCOL_RANGE_MPEG;
-                }
             } else {
                 out_stream->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1');
             }
@@ -421,11 +407,13 @@ int ff_transmux_to_hls_fmp4(
     av_dict_set(&out_opts, "hls_playlist_type", "event", 0);
     av_dict_set(&out_opts, "hls_list_size", "0", 0);
     av_dict_set(&out_opts, "hls_segment_type", "fmp4", 0);
-    av_dict_set(&out_opts, "hls_flags", "independent_segments", 0);
+    av_dict_set(&out_opts, "hls_flags", "independent_segments+append_list", 0);
     av_dict_set(&out_opts, "hls_fmp4_init_filename", "init.mp4", 0);
     av_dict_set(&out_opts, "hls_segment_filename", segment_filename_pattern, 0);
     av_dict_set(&out_opts, "strict", "unofficial", 0);
-    av_dict_set(&out_opts, "hls_segment_options", "strict=unofficial:movflags=+frag_keyframe+default_base_moof+delay_moov:write_colr=1", 0);
+    // Keep segment options minimal and valid across ffmpeg variants to avoid
+    // "Some of the provided format options are not recognized" on hls muxer.
+    av_dict_set(&out_opts, "hls_segment_options", "strict=unofficial", 0);
     av_dict_set(&out_opts, "avoid_negative_ts", "make_non_negative", 0);
     av_dict_set(&out_opts, "max_interleave_delta", "0", 0);
     av_dict_set(&out_opts, "muxdelay", "0", 0);
