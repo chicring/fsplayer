@@ -43,7 +43,14 @@ typedef struct FSMuxer {
     int64_t video_start_pts;
 } FSMuxer;
 
+static int fs_stream_probe_dovi_conf(
+    const AVStream *stream,
+    int *stream_side_data_hit,
+    int *codecpar_side_data_hit,
+    int *metadata_hint_hit
+);
 static int fs_stream_has_dovi_conf(const AVStream *stream);
+static int fs_stream_has_dovi_metadata_hint(const AVStream *stream);
 
 typedef struct FSAudioTranscodeContext {
     int enabled;
@@ -138,32 +145,91 @@ static int fs_pick_video_stream(const AVFormatContext *ifmt_ctx)
     return fallback_video;
 }
 
-static int fs_stream_has_dovi_conf(const AVStream *stream)
+static int fs_stream_has_dovi_metadata_hint(const AVStream *stream)
 {
+    if (!stream || !stream->metadata) {
+        return 0;
+    }
+    const AVDictionaryEntry *tag = NULL;
+    while ((tag = av_dict_get(stream->metadata, "", tag, AV_DICT_IGNORE_SUFFIX))) {
+        const char *key = tag->key ? tag->key : "";
+        const char *value = tag->value ? tag->value : "";
+        if (strcasestr(key, "dovi") || strcasestr(key, "dolby") ||
+            strcasestr(value, "dovi") || strcasestr(value, "dolby vision")) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int fs_stream_probe_dovi_conf(
+    const AVStream *stream,
+    int *stream_side_data_hit,
+    int *codecpar_side_data_hit,
+    int *metadata_hint_hit
+)
+{
+    int stream_hit = 0;
+    int codecpar_hit = 0;
+    int metadata_hit = fs_stream_has_dovi_metadata_hint(stream);
 #ifdef AV_PKT_DATA_DOVI_CONF
     int side_data_size = 0;
     if (!stream) {
+        if (stream_side_data_hit) {
+            *stream_side_data_hit = 0;
+        }
+        if (codecpar_side_data_hit) {
+            *codecpar_side_data_hit = 0;
+        }
+        if (metadata_hint_hit) {
+            *metadata_hint_hit = 0;
+        }
         return 0;
     }
     {
         const uint8_t *side_data = av_stream_get_side_data((AVStream *)stream, AV_PKT_DATA_DOVI_CONF, &side_data_size);
         if (side_data && side_data_size > 0) {
-            return 1;
+            stream_hit = 1;
         }
     }
     if (stream->codecpar && stream->codecpar->coded_side_data && stream->codecpar->nb_coded_side_data > 0) {
         for (int i = 0; i < stream->codecpar->nb_coded_side_data; i++) {
             const AVPacketSideData *entry = &stream->codecpar->coded_side_data[i];
             if (entry->type == AV_PKT_DATA_DOVI_CONF && entry->data && entry->size > 0) {
-                return 1;
+                codecpar_hit = 1;
+                break;
             }
         }
     }
-    return 0;
 #else
-    (void)stream;
-    return 0;
+    if (!stream) {
+        if (stream_side_data_hit) {
+            *stream_side_data_hit = 0;
+        }
+        if (codecpar_side_data_hit) {
+            *codecpar_side_data_hit = 0;
+        }
+        if (metadata_hint_hit) {
+            *metadata_hint_hit = 0;
+        }
+        return 0;
+    }
 #endif
+    if (stream_side_data_hit) {
+        *stream_side_data_hit = stream_hit;
+    }
+    if (codecpar_side_data_hit) {
+        *codecpar_side_data_hit = codecpar_hit;
+    }
+    if (metadata_hint_hit) {
+        *metadata_hint_hit = metadata_hit;
+    }
+    return stream_hit || codecpar_hit;
+}
+
+static int fs_stream_has_dovi_conf(const AVStream *stream)
+{
+    return fs_stream_probe_dovi_conf(stream, NULL, NULL, NULL);
 }
 
 static void fs_copy_stream_side_data(const AVStream *in_stream, AVStream *out_stream)
@@ -952,6 +1018,7 @@ int ff_transmux_to_hls_fmp4(
     const char *input_url,
     const char *output_directory,
     const char *headers,
+    int64_t start_position_ms,
     int segment_duration_sec,
     int timeout_sec,
     int prefer_dolby_vision,
@@ -969,10 +1036,19 @@ int ff_transmux_to_hls_fmp4(
     int audio_stream = -1;
     int any_audio_stream = -1;
     int audio_transcode_to_aac = 0;
+    int selected_video_has_dovi = 0;
+    int selected_video_dovi_stream_sd = 0;
+    int selected_video_dovi_codecpar_sd = 0;
+    int selected_video_dovi_metadata_hint = 0;
+    int selected_output_has_dovi = 0;
+    int selected_output_dovi_stream_sd = 0;
+    int selected_output_dovi_codecpar_sd = 0;
+    int selected_output_dovi_metadata_hint = 0;
     int video_has_key_written = 0;
     int64_t *last_dts_per_stream = NULL;
     int synthesized_ts_count = 0;
     int dropped_no_ts_count = 0;
+    int64_t normalized_start_position_ms = 0;
     FSAudioTranscodeContext audio_transcode = {0};
     FSTransmuxInterruptContext interrupt_context = {0};
     audio_transcode.in_stream_index = -1;
@@ -981,11 +1057,15 @@ int ff_transmux_to_hls_fmp4(
     if (!input_url || !*input_url || !output_directory || !*output_directory) {
         return -1;
     }
+    normalized_start_position_ms = start_position_ms > 0 ? start_position_ms : 0;
 
     if (headers && *headers) {
         av_dict_set(&in_opts, "headers", headers, 0);
     }
     av_dict_set(&in_opts, "fflags", "+genpts", 0);
+    // Ask demux/parsers to export codec side-data (includes DV config on supported inputs).
+    // Equivalent to CLI: -export_side_data +venc_params
+    av_dict_set(&in_opts, "export_side_data", "venc_params", 0);
     av_dict_set(&in_opts, "probesize", "20000000", 0);
     av_dict_set(&in_opts, "analyzeduration", "30000000", 0);
     av_dict_set(&in_opts, "reconnect", "1", 0);
@@ -1028,6 +1108,41 @@ int ff_transmux_to_hls_fmp4(
             ret = -3;
         }
         goto end;
+    }
+
+    if (normalized_start_position_ms > 0) {
+        const int64_t target_ts = av_rescale_q(
+            normalized_start_position_ms,
+            (AVRational){1, 1000},
+            AV_TIME_BASE_Q
+        );
+        ret = avformat_seek_file(
+            ifmt_ctx,
+            -1,
+            INT64_MIN,
+            target_ts,
+            INT64_MAX,
+            AVSEEK_FLAG_BACKWARD
+        );
+        if (ret < 0) {
+            av_log(
+                NULL,
+                AV_LOG_ERROR,
+                "transmux: avformat_seek_file failed, start_position_ms=%lld ret=%d\n",
+                (long long)normalized_start_position_ms,
+                ret
+            );
+            ret = -19;
+            goto end;
+        }
+        avformat_flush(ifmt_ctx);
+        av_log(
+            NULL,
+            AV_LOG_INFO,
+            "transmux: start seek applied start_position_ms=%lld target_ts=%lld\n",
+            (long long)normalized_start_position_ms,
+            (long long)target_ts
+        );
     }
 
     video_stream = fs_pick_video_stream(ifmt_ctx);
@@ -1123,18 +1238,39 @@ int ff_transmux_to_hls_fmp4(
             out_stream->codecpar->frame_size = 1536;
         }
         if (out_stream->codecpar->codec_id == AV_CODEC_ID_HEVC) {
-            const int has_dovi = fs_stream_has_dovi_conf(in_stream);
+            int has_dovi_stream_sd = 0;
+            int has_dovi_codecpar_sd = 0;
+            int has_dovi_metadata_hint = 0;
+            const int has_dovi = fs_stream_probe_dovi_conf(
+                in_stream,
+                &has_dovi_stream_sd,
+                &has_dovi_codecpar_sd,
+                &has_dovi_metadata_hint
+            );
             const int should_use_dolby_tag = has_dovi && prefer_dolby_vision;
             if (prefer_dolby_vision && !has_dovi) {
                 if (fs_apply_hdr_color_fallback(out_stream->codecpar)) {
                     av_log(NULL, AV_LOG_WARNING,
-                           "transmux: dolby fallback color tags applied (bt2020/pq)\n");
+                           "transmux: dolby fallback color tags applied (bt2020/pq) meta_hint=%d\n",
+                           has_dovi_metadata_hint);
                 }
             }
             if (should_use_dolby_tag) {
                 out_stream->codecpar->codec_tag = MKTAG('d', 'v', 'h', '1');
             } else {
                 out_stream->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1');
+            }
+            if ((int)i == video_stream) {
+                selected_video_has_dovi = has_dovi;
+                selected_video_dovi_stream_sd = has_dovi_stream_sd;
+                selected_video_dovi_codecpar_sd = has_dovi_codecpar_sd;
+                selected_video_dovi_metadata_hint = has_dovi_metadata_hint;
+                selected_output_has_dovi = fs_stream_probe_dovi_conf(
+                    out_stream,
+                    &selected_output_dovi_stream_sd,
+                    &selected_output_dovi_codecpar_sd,
+                    &selected_output_dovi_metadata_hint
+                );
             }
         } else {
             out_stream->codecpar->codec_tag = 0;
@@ -1153,7 +1289,15 @@ int ff_transmux_to_hls_fmp4(
     }
 
     char hls_time_buf[16] = {0};
+    char hls_start_number_buf[32] = {0};
     int normalized_segment_duration_sec = segment_duration_sec > 0 ? segment_duration_sec : 4;
+    int64_t normalized_start_number = 0;
+    if (normalized_start_position_ms > 0 && normalized_segment_duration_sec > 0) {
+        const int64_t segment_duration_ms = (int64_t)normalized_segment_duration_sec * 1000LL;
+        normalized_start_number = segment_duration_ms > 0
+            ? normalized_start_position_ms / segment_duration_ms
+            : 0;
+    }
     snprintf(hls_time_buf, sizeof(hls_time_buf), "%d", normalized_segment_duration_sec);
     av_dict_set(&out_opts, "hls_time", hls_time_buf, 0);
     // Use event playlist during transmux so playlist is updated incrementally
@@ -1164,6 +1308,22 @@ int ff_transmux_to_hls_fmp4(
     av_dict_set(&out_opts, "hls_flags", "independent_segments+temp_file", 0);
     av_dict_set(&out_opts, "hls_fmp4_init_filename", "init.mp4", 0);
     av_dict_set(&out_opts, "hls_segment_filename", segment_filename_pattern, 0);
+    if (normalized_start_number > 0) {
+        snprintf(
+            hls_start_number_buf,
+            sizeof(hls_start_number_buf),
+            "%lld",
+            (long long)normalized_start_number
+        );
+        av_dict_set(&out_opts, "start_number", hls_start_number_buf, 0);
+        av_log(
+            NULL,
+            AV_LOG_INFO,
+            "transmux: hls start_number=%lld segment_duration_sec=%d\n",
+            (long long)normalized_start_number,
+            normalized_segment_duration_sec
+        );
+    }
     av_dict_set(&out_opts, "strict", "unofficial", 0);
     // Keep segment options minimal and valid across ffmpeg variants to avoid
     // "Some of the provided format options are not recognized" on hls muxer.
@@ -1178,11 +1338,27 @@ int ff_transmux_to_hls_fmp4(
         const char *video_codec_name = selected_video && selected_video->codecpar
             ? avcodec_get_name(selected_video->codecpar->codec_id)
             : "unknown";
-        int has_dovi = fs_stream_has_dovi_conf(selected_video);
+        int log_stream_sd = selected_video_dovi_stream_sd;
+        int log_codecpar_sd = selected_video_dovi_codecpar_sd;
+        int log_metadata_hint = selected_video_dovi_metadata_hint;
+        int has_dovi = selected_video_has_dovi;
+        if (!selected_video || !selected_video->codecpar) {
+            log_stream_sd = 0;
+            log_codecpar_sd = 0;
+            log_metadata_hint = 0;
+            has_dovi = 0;
+        } else if (log_stream_sd == 0 && log_codecpar_sd == 0 && log_metadata_hint == 0 && has_dovi == 0) {
+            has_dovi = fs_stream_probe_dovi_conf(
+                selected_video,
+                &log_stream_sd,
+                &log_codecpar_sd,
+                &log_metadata_hint
+            );
+        }
         av_log(
             NULL,
             AV_LOG_INFO,
-            "transmux: selected video stream=%d codec=%s dovi=%d prefer_dolby=%d tag=%s color_range=%d primaries=%d trc=%d colorspace=%d\n",
+            "transmux: selected video stream=%d codec=%s dovi=%d prefer_dolby=%d tag=%s color_range=%d primaries=%d trc=%d colorspace=%d dovi_stream_sd=%d dovi_codecpar_sd=%d dovi_meta_hint=%d out_dovi=%d out_stream_sd=%d out_codecpar_sd=%d\n",
             video_stream,
             video_codec_name,
             has_dovi,
@@ -1191,7 +1367,13 @@ int ff_transmux_to_hls_fmp4(
             selected_video && selected_video->codecpar ? selected_video->codecpar->color_range : -1,
             selected_video && selected_video->codecpar ? selected_video->codecpar->color_primaries : -1,
             selected_video && selected_video->codecpar ? selected_video->codecpar->color_trc : -1,
-            selected_video && selected_video->codecpar ? selected_video->codecpar->color_space : -1
+            selected_video && selected_video->codecpar ? selected_video->codecpar->color_space : -1,
+            log_stream_sd,
+            log_codecpar_sd,
+            log_metadata_hint,
+            selected_output_has_dovi,
+            selected_output_dovi_stream_sd,
+            selected_output_dovi_codecpar_sd
         );
     }
     if (audio_stream >= 0) {

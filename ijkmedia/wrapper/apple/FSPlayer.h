@@ -103,10 +103,19 @@ NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT NSErrorDomain const FSTransmuxerErrorDomain;
 
+typedef NS_ERROR_ENUM(FSTransmuxerErrorDomain, FSTransmuxerErrorCode) {
+    FSTransmuxerErrorInvalidRequest = -1001,
+    FSTransmuxerErrorPrepareDirectoryFailed = -1002,
+    FSTransmuxerErrorExecutionFailed = -1003,
+    FSTransmuxerErrorOutputMissing = -1004,
+    FSTransmuxerErrorCancelled = -1005,
+};
+
 @interface FSTransmuxRequest : NSObject
 @property(nonatomic, copy) NSString *sourceURL;
 @property(nonatomic, copy) NSDictionary<NSString *, NSString *> *headers;
 @property(nonatomic, copy) NSString *outputDirectory;
+@property(nonatomic, assign) int64_t startPositionMs;
 @property(nonatomic, assign) NSInteger segmentDurationSec;
 @property(nonatomic, assign) NSInteger timeoutSec;
 @property(nonatomic, assign) BOOL preferDolbyVision;
@@ -121,6 +130,7 @@ FOUNDATION_EXPORT NSErrorDomain const FSTransmuxerErrorDomain;
 
 @interface FSTransmuxer : NSObject
 - (nullable FSTransmuxResult *)transmux:(FSTransmuxRequest *)request error:(NSError * _Nullable * _Nullable)error;
+- (void)cancel;
 @end
 
 @interface FSPlayer : NSObject <FSMediaPlayback>

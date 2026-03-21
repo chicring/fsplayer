@@ -26,6 +26,7 @@
 #define ff_muxer_h
 
 #include <stdio.h>
+#include <stdatomic.h>
 struct FFPlayer;
 struct AVPacket;
 struct AVFormatContext;
@@ -42,9 +43,11 @@ int ff_transmux_to_hls_fmp4(
     const char *input_url,
     const char *output_directory,
     const char *headers,
+    int64_t start_position_ms,
     int segment_duration_sec,
     int timeout_sec,
-    int prefer_dolby_vision
+    int prefer_dolby_vision,
+    const atomic_int *cancel_flag
 );
 
 #endif /* ff_muxer_h */

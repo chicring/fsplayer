@@ -41,6 +41,7 @@
 #include "../ijkmedia/ijkplayer/ijkmeta.h"
 #include "../ijkmedia/ijkplayer/ff_ffmsg_queue.h"
 #include <dirent.h>
+#include <stdatomic.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -48,9 +49,11 @@ int ff_transmux_to_hls_fmp4(
     const char *input_url,
     const char *output_directory,
     const char *headers,
+    int64_t start_position_ms,
     int segment_duration_sec,
     int timeout_sec,
-    int prefer_dolby_vision
+    int prefer_dolby_vision,
+    const atomic_int *cancel_flag
 );
 
 static const char *kIJKFFRequiredFFmpegVersion = "n7.1.1-32";
@@ -70,13 +73,6 @@ static void (^_logHandler)(FSLogLevel level, NSString *tag, NSString *msg);
 
 NSErrorDomain const FSTransmuxerErrorDomain = @"com.fsplayer.transmuxer";
 
-typedef NS_ENUM(NSInteger, FSTransmuxerErrorCode) {
-    FSTransmuxerErrorInvalidRequest = -1001,
-    FSTransmuxerErrorPrepareDirectoryFailed = -1002,
-    FSTransmuxerErrorExecutionFailed = -1003,
-    FSTransmuxerErrorOutputMissing = -1004,
-};
-
 @implementation FSTransmuxRequest
 - (instancetype)init
 {
@@ -85,6 +81,7 @@ typedef NS_ENUM(NSInteger, FSTransmuxerErrorCode) {
         return nil;
     }
     _headers = @{};
+    _startPositionMs = 0;
     _segmentDurationSec = 4;
     _timeoutSec = 10;
     _preferDolbyVision = YES;
@@ -97,7 +94,19 @@ typedef NS_ENUM(NSInteger, FSTransmuxerErrorCode) {
 @implementation FSTransmuxResult
 @end
 
-@implementation FSTransmuxer
+@implementation FSTransmuxer {
+    atomic_int _cancelRequested;
+}
+
+- (instancetype)init
+{
+    self = [super init];
+    if (!self) {
+        return nil;
+    }
+    atomic_init(&_cancelRequested, 0);
+    return self;
+}
 
 - (nullable FSTransmuxResult *)transmux:(FSTransmuxRequest *)request error:(NSError * _Nullable * _Nullable)error
 {
@@ -118,21 +127,30 @@ typedef NS_ENUM(NSInteger, FSTransmuxerErrorCode) {
     int segmentDuration = (int)MAX(1, request.segmentDurationSec);
     int timeoutSec = (int)MAX(1, request.timeoutSec);
     CFAbsoluteTime start = CFAbsoluteTimeGetCurrent();
+    atomic_store(&_cancelRequested, 0);
 
     int ret = ff_transmux_to_hls_fmp4(
         request.sourceURL.UTF8String,
         request.outputDirectory.UTF8String,
         headersText.length > 0 ? headersText.UTF8String : NULL,
+        (int64_t)MAX((int64_t)0, request.startPositionMs),
         segmentDuration,
         timeoutSec,
-        request.preferDolbyVision ? 1 : 0
+        request.preferDolbyVision ? 1 : 0,
+        &_cancelRequested
     );
     if (ret != 0) {
         if (error) {
+            FSTransmuxerErrorCode errorCode = FSTransmuxerErrorExecutionFailed;
+            NSString *description = [NSString stringWithFormat:@"FFmpeg transmux failed (%d)", ret];
+            if (ret == -22) {
+                errorCode = FSTransmuxerErrorCancelled;
+                description = @"FFmpeg transmux cancelled";
+            }
             *error = [NSError errorWithDomain:FSTransmuxerErrorDomain
-                                         code:FSTransmuxerErrorExecutionFailed
+                                         code:errorCode
                                      userInfo:@{
-                NSLocalizedDescriptionKey: [NSString stringWithFormat:@"FFmpeg transmux failed (%d)", ret],
+                NSLocalizedDescriptionKey: description,
                 @"retCode": @(ret),
             }];
         }
@@ -160,6 +178,11 @@ typedef NS_ENUM(NSInteger, FSTransmuxerErrorCode) {
     result.outputBytes = outputBytes;
     result.durationMs = durationMs;
     return result;
+}
+
+- (void)cancel
+{
+    atomic_store(&_cancelRequested, 1);
 }
 
 - (BOOL)prepareDirectory:(NSString *)directory error:(NSError * _Nullable * _Nullable)error
