@@ -1046,6 +1046,7 @@ int ff_transmux_to_hls_fmp4(
     int selected_output_dovi_metadata_hint = 0;
     int video_has_key_written = 0;
     int64_t *last_dts_per_stream = NULL;
+    int64_t *first_ts_per_stream = NULL;
     int synthesized_ts_count = 0;
     int dropped_no_ts_count = 0;
     int64_t normalized_start_position_ms = 0;
@@ -1412,8 +1413,14 @@ int ff_transmux_to_hls_fmp4(
             ret = -15;
             goto end;
         }
+        first_ts_per_stream = av_mallocz(sizeof(int64_t) * ofmt_ctx->nb_streams);
+        if (!first_ts_per_stream) {
+            ret = -15;
+            goto end;
+        }
         for (unsigned int i = 0; i < ofmt_ctx->nb_streams; i++) {
             last_dts_per_stream[i] = AV_NOPTS_VALUE;
+            first_ts_per_stream[i] = AV_NOPTS_VALUE;
         }
     }
 
@@ -1504,6 +1511,30 @@ int ff_transmux_to_hls_fmp4(
             packet.duration = 1;
         }
         packet.pos = -1;
+        if ((unsigned int)mapped_index < ofmt_ctx->nb_streams) {
+            int64_t first_ts = first_ts_per_stream ? first_ts_per_stream[mapped_index] : AV_NOPTS_VALUE;
+            int64_t packet_start_ts = packet.dts != AV_NOPTS_VALUE ? packet.dts : packet.pts;
+            if (first_ts == AV_NOPTS_VALUE && packet_start_ts != AV_NOPTS_VALUE) {
+                first_ts = packet_start_ts;
+                if (first_ts_per_stream) {
+                    first_ts_per_stream[mapped_index] = first_ts;
+                }
+            }
+            if (first_ts != AV_NOPTS_VALUE) {
+                if (packet.pts != AV_NOPTS_VALUE) {
+                    packet.pts -= first_ts;
+                    if (packet.pts < 0) {
+                        packet.pts = 0;
+                    }
+                }
+                if (packet.dts != AV_NOPTS_VALUE) {
+                    packet.dts -= first_ts;
+                    if (packet.dts < 0) {
+                        packet.dts = 0;
+                    }
+                }
+            }
+        }
         if (packet.pts != AV_NOPTS_VALUE && packet.dts != AV_NOPTS_VALUE && packet.pts < packet.dts) {
             packet.pts = packet.dts;
         }
@@ -1577,6 +1608,9 @@ end:
     }
     if (last_dts_per_stream) {
         av_freep(&last_dts_per_stream);
+    }
+    if (first_ts_per_stream) {
+        av_freep(&first_ts_per_stream);
     }
     fs_release_audio_transcode_context(&audio_transcode);
     return ret;
