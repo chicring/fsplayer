@@ -1305,7 +1305,12 @@ int ff_transmux_to_hls_fmp4(
     av_dict_set(&out_opts, "hls_playlist_type", "event", 0);
     av_dict_set(&out_opts, "hls_list_size", "0", 0);
     av_dict_set(&out_opts, "hls_segment_type", "fmp4", 0);
-    av_dict_set(&out_opts, "hls_flags", "independent_segments+temp_file", 0);
+    // Long-GOP HEVC MKV can stall bridge startup for tens of seconds if the HLS
+    // muxer waits for the next keyframe before cutting the first segment.
+    // `split_by_time` allows the first playable segment to be emitted on time,
+    // trading away fully keyframe-aligned segment boundaries for much lower
+    // startup latency on AVPlayer bridge playback.
+    av_dict_set(&out_opts, "hls_flags", "split_by_time+temp_file", 0);
     av_dict_set(&out_opts, "hls_fmp4_init_filename", "init.mp4", 0);
     av_dict_set(&out_opts, "hls_segment_filename", segment_filename_pattern, 0);
     if (normalized_start_number > 0) {
