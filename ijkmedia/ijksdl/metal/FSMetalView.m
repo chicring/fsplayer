@@ -282,11 +282,16 @@ static FSDOVIFrameInfo fs_read_dovi_info(FSOverlayAttach *attach)
         hdrPercentage:(float)hdrPercentage
 {
     [self.pilelineLock lock];
+    FSDOVIFrameInfo doviInfo = fs_read_dovi_info(attach);
+    if (doviInfo.reshape_params.enabled && hdrPercentage < 1.0f) {
+        // DOVI softdecode reshaped signal is PQ/BT.2020 but may lack HDR tags on CVPixelBuffer.
+        // Force full-range tone mapping instead of relying on hdrPercentage guard.
+        hdrPercentage = 1.0f;
+    }
     self.picturePipeline.hdrPercentage = hdrPercentage;
     self.picturePipeline.autoZRotateDegrees = attach.autoZRotate;
     self.picturePipeline.rotateType = self.rotatePreference.type;
     self.picturePipeline.rotateDegrees = self.rotatePreference.degrees;
-    FSDOVIFrameInfo doviInfo = fs_read_dovi_info(attach);
     [self.picturePipeline updateDoviInfo:&doviInfo];
     
     bool applyAdjust = _colorPreference.brightness != 1.0 || _colorPreference.saturation != 1.0 || _colorPreference.contrast != 1.0;

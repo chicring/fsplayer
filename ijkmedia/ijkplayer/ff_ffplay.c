@@ -1361,6 +1361,7 @@ static int queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double d
     Frame *vp;
     int video_accurate_seek_fail = 0;
     int64_t now = 0;
+    FSDOVIFrameInfo dovi_info;
     
     monkey_log(NULL, AV_LOG_INFO,"xql video queue_picture\n");
     
@@ -1498,6 +1499,10 @@ static int queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double d
     
     if (!(vp = frame_queue_peek_writable(&is->pictq)))
         return -1;
+
+    // Capture DOVI metadata from the original decoder frame before optional
+    // pixel-format conversion, because converted frames may drop side data.
+    fs_fill_dovi_info(src_frame, &dovi_info);
 
     vp->sar = src_frame->sample_aspect_ratio;
     
@@ -1681,7 +1686,7 @@ static int queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double d
             vp->bmp->has_alpha = 0;
         }
 
-        fs_fill_dovi_info(src_frame, &vp->bmp->dovi_info);
+        vp->bmp->dovi_info = dovi_info;
         
         if (ffp->autorotate) {
             //fill video ratate degrees
