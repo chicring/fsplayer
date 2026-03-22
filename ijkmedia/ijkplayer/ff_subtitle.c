@@ -453,15 +453,35 @@ static void move_backup_to_normal(FFSubtitle *sub, int stream)
     }
 }
 
+static const char *resolve_stream_charenc(FFSubtitle *sub, const char *enc)
+{
+    if (enc && enc[0]) {
+        return enc;
+    }
+    if (!sub || !sub->opts) {
+        return NULL;
+    }
+
+    AVDictionaryEntry *entry = av_dict_get(sub->opts, "sub_charenc", NULL, AV_DICT_IGNORE_SUFFIX);
+    if ((!entry || !entry->value || !entry->value[0])) {
+        entry = av_dict_get(sub->opts, "charenc", NULL, AV_DICT_IGNORE_SUFFIX);
+    }
+    if (entry && entry->value && entry->value[0]) {
+        return entry->value;
+    }
+    return NULL;
+}
+
 static int open_any_stream(FFSubtitle *sub, int stream, const char *enc)
 {
     if (stream < 0) {
         return -2;
     }
+    const char *resolved_enc = resolve_stream_charenc(sub, enc);
     if (stream < sub->ic_internal->nb_streams) {
         //open internal
         AVStream *st = sub->ic_internal->streams[sub->need_update_stream];
-        int r = subComponent_open(&sub->com, stream, st, &sub->packetq, &sub->frameq, enc, &retry_callback, (void *)sub, sub->video_w, sub->video_h, 0.0);
+        int r = subComponent_open(&sub->com, stream, st, &sub->packetq, &sub->frameq, resolved_enc, &retry_callback, (void *)sub, sub->video_w, sub->video_h, 0.0);
         if (!r) {
             subComponent_update_preference(sub->com, &sub->sp);
             move_backup_to_normal(sub, stream);
@@ -473,7 +493,7 @@ static int open_any_stream(FFSubtitle *sub, int stream, const char *enc)
             if (!exSub_open_input(&sub->exSub, &sub->packetq, file, sub->streamStartTime, sub->opts)) {
                 AVStream *st = exSub_get_stream(sub->exSub);
                 int st_id = exSub_get_stream_id(sub->exSub);
-                int r = subComponent_open(&sub->com, st_id, st, &sub->packetq, &sub->frameq, enc, &retry_callback, (void *)sub, sub->video_w, sub->video_h, sub->streamStartTime);
+                int r = subComponent_open(&sub->com, st_id, st, &sub->packetq, &sub->frameq, resolved_enc, &retry_callback, (void *)sub, sub->video_w, sub->video_h, sub->streamStartTime);
                 if (!r) {
                     subComponent_update_preference(sub->com, &sub->sp);
                     exSub_start_read(sub->exSub);

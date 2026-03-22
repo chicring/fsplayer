@@ -4320,7 +4320,7 @@ static VideoState *stream_open(FFPlayer *ffp, const char *filename, AVInputForma
     
     AVDictionary *opts = NULL;
     
-    char *ic_string_val_keys[] = {"user_agent", "http_proxy", NULL};
+    char *ic_string_val_keys[] = {"user_agent", "http_proxy", "sub_charenc", "charenc", NULL};
     {
         char **ic_key_header = ic_string_val_keys;
         const char *ic_key;
