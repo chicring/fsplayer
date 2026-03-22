@@ -26,6 +26,7 @@
 #include "ff_ass_renderer.h"
 #include "ijksdl/ijksdl_gpu.h"
 #include "ff_subtitle_preference.h"
+#include "libavutil/avstring.h"
 
 #define SUB_MAX_KEEP_DU 3.0
 #define A_ASS_IMG_DURATION 0.035
@@ -51,6 +52,83 @@ typedef struct FFSubComponent{
     float pre_loading;
 
 }FFSubComponent;
+
+static int is_valid_utf8_bytes(const uint8_t *text, int len)
+{
+    const uint8_t *cursor = text;
+    const uint8_t *end = text + len;
+    while (cursor < end) {
+        int32_t code = 0;
+        if (av_utf8_decode(&code, &cursor, end, 0) < 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int utf8_has_cjk_codepoint(const uint8_t *text, int len)
+{
+    const uint8_t *cursor = text;
+    const uint8_t *end = text + len;
+    while (cursor < end) {
+        int32_t code = 0;
+        if (av_utf8_decode(&code, &cursor, end, 0) < 0) {
+            return 0;
+        }
+        if ((code >= 0x3400 && code <= 0x4DBF) ||
+            (code >= 0x4E00 && code <= 0x9FFF) ||
+            (code >= 0xF900 && code <= 0xFAFF) ||
+            (code >= 0x3000 && code <= 0x303F)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static char *repair_mov_text_mojibake(FFSubComponent *com, const char *ass_line)
+{
+    if (!com || !com->decoder.avctx || !ass_line) {
+        return NULL;
+    }
+    if (com->decoder.avctx->codec_id != AV_CODEC_ID_MOV_TEXT) {
+        return NULL;
+    }
+
+    size_t src_len = strlen(ass_line);
+    if (src_len == 0) {
+        return NULL;
+    }
+
+    const uint8_t *cursor = (const uint8_t *)ass_line;
+    const uint8_t *end = cursor + src_len;
+    uint8_t *repaired = av_malloc(src_len + 1);
+    if (!repaired) {
+        return NULL;
+    }
+
+    int out_len = 0;
+    int saw_high_code = 0;
+    while (cursor < end) {
+        int32_t code = 0;
+        if (av_utf8_decode(&code, &cursor, end, AV_UTF8_FLAG_ACCEPT_ALL) < 0 || code < 0 || code > 0xFF) {
+            av_free(repaired);
+            return NULL;
+        }
+        if (code >= 0x80) {
+            saw_high_code = 1;
+        }
+        repaired[out_len++] = (uint8_t)code;
+    }
+    repaired[out_len] = 0;
+
+    if (!saw_high_code || !is_valid_utf8_bytes(repaired, out_len) || !utf8_has_cjk_codepoint(repaired, out_len)) {
+        av_free(repaired);
+        return NULL;
+    }
+
+    av_log(NULL, AV_LOG_INFO, "sub mov_text utf8 repair applied stream:%d\n", com->st_idx);
+    return (char *)repaired;
+}
 
 static void apply_preference(FFSubComponent *com)
 {
@@ -368,8 +446,13 @@ static int subtitle_thread(void *arg)
                         }
                     } else {
                         char *ass_line = rect->ass;
+                        char *repaired_ass_line = NULL;
                         if (!ass_line)
                             continue;
+                        repaired_ass_line = repair_mov_text_mojibake(com, ass_line);
+                        if (repaired_ass_line) {
+                            ass_line = repaired_ass_line;
+                        }
                         if (!create_ass_renderer_if_need(com)) {
                             const float begin = pts + (float)sub.start_display_time / 1000.0;
                             float end = sub.end_display_time - sub.start_display_time;
@@ -377,6 +460,7 @@ static int subtitle_thread(void *arg)
                             com->ass_processed = begin + end/1000.0;
                             num_rect++;
                         }
+                        av_freep(&repaired_ass_line);
                     }
                 }
                 
