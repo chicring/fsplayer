@@ -53,7 +53,8 @@ int ff_transmux_to_hls_fmp4(
     int segment_duration_sec,
     int timeout_sec,
     int prefer_dolby_vision,
-    const atomic_int *cancel_flag
+    const atomic_int *cancel_flag,
+    int is_reanchor
 );
 
 static const char *kIJKFFRequiredFFmpegVersion = "n7.1.1-32";
@@ -85,6 +86,7 @@ NSErrorDomain const FSTransmuxerErrorDomain = @"com.fsplayer.transmuxer";
     _segmentDurationSec = 4;
     _timeoutSec = 10;
     _preferDolbyVision = YES;
+    _isReanchor = NO;
     _sourceURL = @"";
     _outputDirectory = @"";
     return self;
@@ -137,7 +139,8 @@ NSErrorDomain const FSTransmuxerErrorDomain = @"com.fsplayer.transmuxer";
         segmentDuration,
         timeoutSec,
         request.preferDolbyVision ? 1 : 0,
-        &_cancelRequested
+        &_cancelRequested,
+        request.isReanchor ? 1 : 0
     );
     if (ret != 0) {
         if (error) {

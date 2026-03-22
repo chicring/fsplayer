@@ -1022,7 +1022,8 @@ int ff_transmux_to_hls_fmp4(
     int segment_duration_sec,
     int timeout_sec,
     int prefer_dolby_vision,
-    const atomic_int *cancel_flag
+    const atomic_int *cancel_flag,
+    int is_reanchor
 )
 {
     int ret = 0;
@@ -1050,6 +1051,9 @@ int ff_transmux_to_hls_fmp4(
     int synthesized_ts_count = 0;
     int dropped_no_ts_count = 0;
     int64_t normalized_start_position_ms = 0;
+    AVPacket packet = {0};
+    AVPacket pending_start_packet = {0};
+    int has_pending_start_packet = 0;
     FSAudioTranscodeContext audio_transcode = {0};
     FSTransmuxInterruptContext interrupt_context = {0};
     audio_transcode.in_stream_index = -1;
@@ -1067,14 +1071,20 @@ int ff_transmux_to_hls_fmp4(
     // Ask demux/parsers to export codec side-data (includes DV config on supported inputs).
     // Equivalent to CLI: -export_side_data +venc_params
     av_dict_set(&in_opts, "export_side_data", "venc_params", 0);
-    av_dict_set(&in_opts, "probesize", "20000000", 0);
-    av_dict_set(&in_opts, "analyzeduration", "30000000", 0);
+    if (is_reanchor) {
+        av_dict_set(&in_opts, "probesize", "2000000", 0);
+        av_dict_set(&in_opts, "analyzeduration", "2000000", 0);
+    } else {
+        av_dict_set(&in_opts, "probesize", "20000000", 0);
+        av_dict_set(&in_opts, "analyzeduration", "30000000", 0);
+    }
     av_dict_set(&in_opts, "reconnect", "1", 0);
     av_dict_set(&in_opts, "reconnect_streamed", "1", 0);
     av_dict_set(&in_opts, "reconnect_at_eof", "1", 0);
     av_dict_set(&in_opts, "reconnect_delay_max", "2", 0);
+    av_dict_set(&in_opts, "seekable", "1", 0);
     if (timeout_sec > 0) {
-        int io_timeout_sec = timeout_sec > 10 ? 10 : timeout_sec;
+        int io_timeout_sec = timeout_sec > 30 ? 30 : timeout_sec;
         char timeout_buf[32] = {0};
         snprintf(timeout_buf, sizeof(timeout_buf), "%lld", (long long)io_timeout_sec * 1000000LL);
         av_dict_set(&in_opts, "rw_timeout", timeout_buf, 0);
@@ -1117,33 +1127,85 @@ int ff_transmux_to_hls_fmp4(
             (AVRational){1, 1000},
             AV_TIME_BASE_Q
         );
+        int seek_succeeded = 0;
         ret = avformat_seek_file(
             ifmt_ctx,
             -1,
             INT64_MIN,
             target_ts,
-            INT64_MAX,
-            AVSEEK_FLAG_BACKWARD
+            target_ts,
+            0
         );
-        if (ret < 0) {
+        if (ret >= 0) {
+            avformat_flush(ifmt_ctx);
+            seek_succeeded = 1;
             av_log(
                 NULL,
-                AV_LOG_ERROR,
-                "transmux: avformat_seek_file failed, start_position_ms=%lld ret=%d\n",
+                AV_LOG_INFO,
+                "transmux: start seek applied start_position_ms=%lld target_ts=%lld\n",
                 (long long)normalized_start_position_ms,
-                ret
+                (long long)target_ts
             );
-            ret = -19;
-            goto end;
+        } else {
+            av_log(
+                NULL,
+                AV_LOG_WARNING,
+                "transmux: avformat_seek_file failed (ret=%d), falling back to linear skip for start_position_ms=%lld\n",
+                ret,
+                (long long)normalized_start_position_ms
+            );
+            AVPacket skip_pkt = {0};
+            int64_t last_pts = AV_NOPTS_VALUE;
+            int skip_count = 0;
+
+            while ((ret = av_read_frame(ifmt_ctx, &skip_pkt)) >= 0) {
+                if (cancel_flag && atomic_load(cancel_flag)) {
+                    av_packet_unref(&skip_pkt);
+                    ret = -22;
+                    goto end;
+                }
+
+                int64_t pkt_ts = skip_pkt.pts != AV_NOPTS_VALUE ? skip_pkt.pts : skip_pkt.dts;
+                if (pkt_ts != AV_NOPTS_VALUE) {
+                    AVStream *st = ifmt_ctx->streams[skip_pkt.stream_index];
+                    int64_t pkt_ts_us = av_rescale_q(pkt_ts, st->time_base, AV_TIME_BASE_Q);
+                    if (pkt_ts_us >= target_ts) {
+                        av_packet_move_ref(&pending_start_packet, &skip_pkt);
+                        has_pending_start_packet = 1;
+                        seek_succeeded = 1;
+                        av_log(
+                            NULL,
+                            AV_LOG_INFO,
+                            "transmux: linear skip done, skipped %d packets to reach target_ts=%lld\n",
+                            skip_count,
+                            (long long)target_ts
+                        );
+                        break;
+                    }
+                    last_pts = pkt_ts_us;
+                }
+
+                skip_count++;
+                av_packet_unref(&skip_pkt);
+            }
+
+            if (ret == AVERROR_EXIT && cancel_flag && atomic_load(cancel_flag)) {
+                ret = -22;
+                goto end;
+            }
+            if (!seek_succeeded) {
+                av_log(
+                    NULL,
+                    AV_LOG_ERROR,
+                    "transmux: linear skip failed, EOF before target. last_pts=%lld target_ts=%lld\n",
+                    (long long)last_pts,
+                    (long long)target_ts
+                );
+                ret = -19;
+                goto end;
+            }
+            ret = 0;
         }
-        avformat_flush(ifmt_ctx);
-        av_log(
-            NULL,
-            AV_LOG_INFO,
-            "transmux: start seek applied start_position_ms=%lld target_ts=%lld\n",
-            (long long)normalized_start_position_ms,
-            (long long)target_ts
-        );
     }
 
     video_stream = fs_pick_video_stream(ifmt_ctx);
@@ -1424,9 +1486,17 @@ int ff_transmux_to_hls_fmp4(
         }
     }
 
-    AVPacket packet;
-    av_init_packet(&packet);
-    while ((ret = av_read_frame(ifmt_ctx, &packet)) >= 0) {
+    while (1) {
+        if (has_pending_start_packet) {
+            av_packet_move_ref(&packet, &pending_start_packet);
+            has_pending_start_packet = 0;
+            ret = 0;
+        } else {
+            ret = av_read_frame(ifmt_ctx, &packet);
+            if (ret < 0) {
+                break;
+            }
+        }
         if (cancel_flag && atomic_load(cancel_flag)) {
             av_packet_unref(&packet);
             ret = -22;
@@ -1606,6 +1676,8 @@ end:
     if (stream_mapping) {
         av_freep(&stream_mapping);
     }
+    av_packet_unref(&packet);
+    av_packet_unref(&pending_start_packet);
     if (last_dts_per_stream) {
         av_freep(&last_dts_per_stream);
     }

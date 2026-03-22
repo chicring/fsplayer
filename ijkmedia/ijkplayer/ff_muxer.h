@@ -47,7 +47,8 @@ int ff_transmux_to_hls_fmp4(
     int segment_duration_sec,
     int timeout_sec,
     int prefer_dolby_vision,
-    const atomic_int *cancel_flag
+    const atomic_int *cancel_flag,
+    int is_reanchor
 );
 
 #endif /* ff_muxer_h */

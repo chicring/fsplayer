@@ -119,6 +119,7 @@ typedef NS_ERROR_ENUM(FSTransmuxerErrorDomain, FSTransmuxerErrorCode) {
 @property(nonatomic, assign) NSInteger segmentDurationSec;
 @property(nonatomic, assign) NSInteger timeoutSec;
 @property(nonatomic, assign) BOOL preferDolbyVision;
+@property(nonatomic, assign) BOOL isReanchor;
 @end
 
 @interface FSTransmuxResult : NSObject
