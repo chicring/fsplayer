@@ -75,7 +75,13 @@ static uint32_t fs_hdr_log_signature(FSHDRFrameInfo frameInfo,
                                      FSMetalPipelineMeta *pipelineMeta)
 {
     uint32_t signature = 0;
-    uint32_t headroomQ = (uint32_t)FFMIN(FFMAX((int)(renderIntent.outputHeadroom * 100.0f + 0.5f), 0), 0x3ff);
+    int headroomQInt = (int)(renderIntent.outputHeadroom * 100.0f + 0.5f);
+    if (headroomQInt < 0) {
+        headroomQInt = 0;
+    } else if (headroomQInt > 0x3ff) {
+        headroomQInt = 0x3ff;
+    }
+    uint32_t headroomQ = (uint32_t)headroomQInt;
     signature |= (uint32_t)(frameInfo.content_type & 0x7);
     signature |= (uint32_t)(frameInfo.decode_path & 0x3) << 3;
     signature |= (uint32_t)(renderIntent.outputColorSpace & 0x7) << 5;
