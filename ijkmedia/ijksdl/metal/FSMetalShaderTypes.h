@@ -71,7 +71,6 @@ typedef struct {
     int inputTransfer;
     int sourceMatrixType;
     int outputColorSpace;
-    int outputTransfer;
     int useDolbyVisionShader;
     int needsToneMapping;
     int needsGamutMapping;

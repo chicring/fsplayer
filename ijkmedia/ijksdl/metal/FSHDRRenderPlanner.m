@@ -148,7 +148,6 @@ static float fs_hdr_pick_source_max_nits(const FSHDRFrameInfo *frameInfo)
     intent.valid = frameInfo && frameInfo->valid;
     if (!intent.valid) {
         intent.outputColorSpace = targetColorSpace;
-        intent.outputTransfer = FSColorTransferFuncLINEAR;
         return intent;
     }
 
@@ -175,10 +174,8 @@ static float fs_hdr_pick_source_max_nits(const FSHDRFrameInfo *frameInfo)
 
     intent.outputColorSpace = targetColorSpace;
     intent.inputTransfer = fs_hdr_input_transfer(frameInfo);
-    intent.outputTransfer = targetColorSpace == FSColorSpaceBT2100_PQ ? FSColorTransferFuncPQ : FSColorTransferFuncLINEAR;
     intent.usesHDRPipeline = hdrInput || targetColorSpace != FSColorSpaceBT709;
-    intent.isDolbyVision = frameInfo->content_type == FS_HDR_CONTENT_TYPE_DOLBY_VISION_LL;
-    intent.useDolbyVisionShader = intent.isDolbyVision &&
+    intent.useDolbyVisionShader = frameInfo->content_type == FS_HDR_CONTENT_TYPE_DOLBY_VISION_LL &&
                                   frameInfo->decode_path == FS_HDR_DECODE_PATH_FFMPEG_SOFTWARE &&
                                   frameInfo->dolby_vision.valid &&
                                   frameInfo->dolby_vision.profile == 5;

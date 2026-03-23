@@ -412,7 +412,6 @@ static uint32_t fs_hdr_log_signature(FSHDRFrameInfo frameInfo,
         uniforms.inputTransfer = _renderIntent.inputTransfer;
         uniforms.sourceMatrixType = self.pipelineMeta.convertMatrixType;
         uniforms.outputColorSpace = _renderIntent.outputColorSpace;
-        uniforms.outputTransfer = _renderIntent.outputTransfer;
         uniforms.useDolbyVisionShader = _renderIntent.useDolbyVisionShader;
         uniforms.needsToneMapping = _renderIntent.needsToneMapping;
         uniforms.needsGamutMapping = _renderIntent.needsGamutMapping;
