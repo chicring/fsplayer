@@ -15,6 +15,7 @@
 // Header shared between C code here, which executes Metal API commands, and .metal files, which
 // uses these types as inputs to the shaders.
 #import "FSMetalShaderTypes.h"
+#import "FSHDRRenderPlanner.h"
 #import "FSMetalRenderer.h"
 #import "FSMetalSubtitlePipeline.h"
 #import "FSMetalOffscreenRendering.h"
@@ -39,6 +40,9 @@ typedef CGRect NSRect;
 @property (atomic, strong) NSLock *pilelineLock;
 @property (assign) BOOL needCleanBackgroundColor;
 @property (nonatomic, copy) dispatch_block_t refreshCurrentPicBlock;
+@property (nonatomic, strong) FSHDRRenderPlanner *renderPlanner;
+@property (nonatomic, assign) FSHDRRenderIntent currentRenderIntent;
+@property (nonatomic, assign) FSColorSpace preferredColorSpace;
 
 #if TARGET_OS_IOS || TARGET_OS_TV
 @property (atomic, assign) BOOL isEnterBackground;
@@ -80,6 +84,8 @@ typedef CGRect NSRect;
     _colorPreference    = (FSColorConvertPreference){1.0, 1.0, 1.0};
     _darPreference      = (FSDARPreference){0.0};
     _pilelineLock = [[NSLock alloc]init];
+    _preferredColorSpace = FSColorSpaceBT709;
+    _renderPlanner = [[FSHDRRenderPlanner alloc] initWithPreferredColorSpace:_preferredColorSpace];
     
     self.device = MTLCreateSystemDefaultDevice();
     if (!self.device) {
@@ -123,6 +129,48 @@ typedef CGRect NSRect;
                                              object:nil];
 #endif
     return YES;
+}
+
+- (FSHDRDisplayCaps)currentDisplayCaps
+{
+    FSHDRDisplayCaps caps = {0};
+    CGFloat headroom = 1.0;
+#if TARGET_OS_IOS || TARGET_OS_TV
+    UIScreen *screen = self.window.screen ?: UIScreen.mainScreen;
+    if (screen && [screen respondsToSelector:NSSelectorFromString(@"maximumExtendedDynamicRangeColorComponentValue")]) {
+        NSNumber *value = [screen valueForKey:@"maximumExtendedDynamicRangeColorComponentValue"];
+        if ([value isKindOfClass:[NSNumber class]]) {
+            headroom = value.doubleValue;
+        }
+    }
+#else
+    NSScreen *screen = self.window.screen ?: NSScreen.mainScreen;
+    if (screen && [screen respondsToSelector:NSSelectorFromString(@"maximumPotentialExtendedDynamicRangeColorComponentValue")]) {
+        NSNumber *value = [screen valueForKey:@"maximumPotentialExtendedDynamicRangeColorComponentValue"];
+        if ([value isKindOfClass:[NSNumber class]]) {
+            headroom = value.doubleValue;
+        }
+    } else if (screen && [screen respondsToSelector:NSSelectorFromString(@"maximumExtendedDynamicRangeColorComponentValue")]) {
+        NSNumber *value = [screen valueForKey:@"maximumExtendedDynamicRangeColorComponentValue"];
+        if ([value isKindOfClass:[NSNumber class]]) {
+            headroom = value.doubleValue;
+        }
+    }
+#endif
+    caps.supportsExtendedRange = headroom > 1.0;
+    caps.supportsPQOutput = caps.supportsExtendedRange;
+    caps.supportsSCRGBOutput = caps.supportsExtendedRange;
+    return caps;
+}
+
+- (void)refreshRenderIntentForAttach:(FSOverlayAttach *)attach
+{
+    if (!attach || !self.renderPlanner) {
+        self.currentRenderIntent = (FSHDRRenderIntent){0};
+        return;
+    }
+    self.currentRenderIntent = [self.renderPlanner planForFrameInfo:&attach.hdrFrameInfo
+                                                        displayCaps:[self currentDisplayCaps]];
 }
 
 - (instancetype)initWithCoder:(NSCoder *)coder
@@ -661,10 +709,22 @@ mp_format * mp_get_metal_format(uint32_t cvpixfmt);
     self.refreshCurrentPicBlock = block;
 }
 
+- (void)setPreferredColorSpace:(FSColorSpace)preferredColorSpace
+{
+    if (_preferredColorSpace == preferredColorSpace) {
+        return;
+    }
+    _preferredColorSpace = preferredColorSpace;
+    self.renderPlanner.preferredColorSpace = preferredColorSpace;
+    [self refreshRenderIntentForAttach:self.currentAttach];
+    [self setNeedsRefreshCurrentPic];
+}
+
 - (BOOL)displayAttach:(FSOverlayAttach *)attach
 {
     //hold the attach as current.
     self.currentAttach = attach;
+    [self refreshRenderIntentForAttach:attach];
     
     if (!attach.videoPicture) {
         ALOGW("FSMetalView: videoPicture is nil\n");

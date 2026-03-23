@@ -300,6 +300,7 @@ NSErrorDomain const FSTransmuxerErrorDomain = @"com.fsplayer.transmuxer";
     NSTimeInterval _playbackTimeNotifiInterval;
     
     __weak FSWeakHolder *_weakHolder;
+    FSColorSpace _colorSpace;
 }
 
 @synthesize view = _view;
@@ -465,6 +466,7 @@ static void FSPlayerSafeDestroy(FSPlayer *player) {
         [options setPlayerOptionIntValue:1 forKey:@"display_disable"];
         [options setPlayerOptionIntValue:0 forKey:@"subtitle_mix"];
     }
+    [self setColorSpace:options.colorSpace];
     
     ijkmp_ios_set_automatically_setup_audio_session(_mediaPlayer, options.automaticallySetupAudioSession);
     
@@ -620,6 +622,14 @@ static void FSPlayerSafeDestroy(FSPlayer *player) {
     FSPlayerSafeDestroy(self);
     
     av_log(NULL, AV_LOG_DEBUG, "FSPlayer dealloc\n");
+}
+
+- (void)setColorSpace:(FSColorSpace)type
+{
+    _colorSpace = type;
+    if ([_videoRendering respondsToSelector:@selector(setPreferredColorSpace:)]) {
+        [_videoRendering setPreferredColorSpace:type];
+    }
 }
 
 - (void)setShouldAutoplay:(BOOL)shouldAutoplay

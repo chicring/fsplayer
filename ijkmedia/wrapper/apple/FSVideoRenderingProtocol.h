@@ -36,6 +36,7 @@ typedef NSView UIView;
 #else
 #import <UIKit/UIKit.h>
 #endif
+#include "FSColorSpace.h"
 #include "../../ijksdl/ijksdl_hdr_frame.h"
 
 NS_ASSUME_NONNULL_BEGIN
@@ -172,6 +173,10 @@ typedef enum : NSUInteger {
 @optional;
 - (void)setBackgroundColor:(uint8_t)r g:(uint8_t)g b:(uint8_t)b;
 - (void)registerRefreshCurrentPicObserver:(nullable dispatch_block_t)block;
+// Output colorspace is optional because the OpenGL fallback keeps the old SDR
+// path until the Metal HDR planner is fully wired.
+- (void)setPreferredColorSpace:(FSColorSpace)colorSpace;
+- (FSColorSpace)preferredColorSpace;
 
 @end
 

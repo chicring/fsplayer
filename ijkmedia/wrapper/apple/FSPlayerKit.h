@@ -32,6 +32,7 @@
 
 #import <FSPlayer/FSMediaPlayback.h>
 #import <FSPlayer/FSMonitor.h>
+#import <FSPlayer/FSColorSpace.h>
 #import <FSPlayer/FSOptions.h>
 #import <FSPlayer/FSPlayer.h>
 #import <FSPlayer/FSMediaModule.h>
