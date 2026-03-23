@@ -10,7 +10,10 @@
 #import "FSMathUtilities.h"
 #import "FSMetalPipelineMeta.h"
 #include "../ijksdl_log.h"
+#include <stdint.h>
 #include <string.h>
+
+static const NSUInteger kFSHDRUniformBufferSlots = 3;
 
 @interface FSMetalRenderer()
 {
@@ -31,6 +34,8 @@
 @property (nonatomic, strong) id<MTLBuffer> hdrUniformBuff;
 @property (nonatomic, assign) BOOL convertMatrixChanged;
 @property (nonatomic, assign) BOOL hdrUniformChanged;
+@property (nonatomic, assign) NSUInteger hdrUniformOffset;
+@property (nonatomic, assign) NSUInteger hdrUniformSlot;
 
 @property (nonatomic, strong) FSMetalPipelineMeta *pipelineMeta;
 @property (nonatomic, assign) BOOL vertexChanged;
@@ -326,9 +331,16 @@
         uniforms.outputHeadroom = _renderIntent.outputHeadroom;
         uniforms.dolbyVision = _hdrFrameInfo.dolby_vision;
 
-        self.hdrUniformBuff = [_device newBufferWithBytes:&uniforms
-                                                   length:sizeof(FSHDRFragmentUniforms)
-                                                  options:MTLResourceStorageModeShared];
+        if (!self.hdrUniformBuff) {
+            self.hdrUniformBuff = [_device newBufferWithLength:sizeof(FSHDRFragmentUniforms) * kFSHDRUniformBufferSlots
+                                                       options:MTLResourceStorageModeShared];
+            self.hdrUniformBuff.label = @"hdrUniforms";
+        }
+        self.hdrUniformSlot = (self.hdrUniformSlot + 1) % kFSHDRUniformBufferSlots;
+        self.hdrUniformOffset = sizeof(FSHDRFragmentUniforms) * self.hdrUniformSlot;
+        memcpy((uint8_t *)self.hdrUniformBuff.contents + self.hdrUniformOffset,
+               &uniforms,
+               sizeof(FSHDRFragmentUniforms));
     }
 }
 
@@ -370,7 +382,7 @@
         }
     }
     [self.argumentEncoder setBuffer:self.convertMatrixBuff offset:0 atIndex:FSFragmentMatrixIndexConvert];
-    [self.argumentEncoder setBuffer:self.hdrUniformBuff offset:0 atIndex:FSFragmentMatrixIndexHDR];
+    [self.argumentEncoder setBuffer:self.hdrUniformBuff offset:self.hdrUniformOffset atIndex:FSFragmentMatrixIndexHDR];
     
     // to map to the GPU's address space.
     if (@available(macOS 10.15, ios 13.0, tvOS 13.0, *)) {

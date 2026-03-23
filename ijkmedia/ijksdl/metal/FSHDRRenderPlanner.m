@@ -138,6 +138,8 @@ static float fs_hdr_pick_source_max_nits(const FSHDRFrameInfo *frameInfo)
     FSColorSpace targetColorSpace = self.preferredColorSpace;
     BOOL hdrInput = fs_hdr_frame_is_hdr(frameInfo);
     BOOL bt2020Input = NO;
+    float sourceMaxNits = 0.0f;
+    float scRGBTargetMaxNits = 0.0f;
 
     intent.valid = frameInfo && frameInfo->valid;
     if (!intent.valid) {
@@ -150,6 +152,8 @@ static float fs_hdr_pick_source_max_nits(const FSHDRFrameInfo *frameInfo)
                   frameInfo->matrix == AVCOL_SPC_BT2020_NCL ||
                   frameInfo->matrix == AVCOL_SPC_BT2020_CL ||
                   frameInfo->content_type == FS_HDR_CONTENT_TYPE_DOLBY_VISION_LL;
+    sourceMaxNits = fs_hdr_pick_source_max_nits(frameInfo);
+    scRGBTargetMaxNits = fmaxf(displayCaps.headroom, 1.0f) * kFSHDRDefaultSDRTargetMaxNits;
 
     if (targetColorSpace == FSColorSpaceUnknown) {
         if (hdrInput && displayCaps.supportsPQOutput) {
@@ -164,6 +168,9 @@ static float fs_hdr_pick_source_max_nits(const FSHDRFrameInfo *frameInfo)
     if (targetColorSpace != FSColorSpaceBT709 && !displayCaps.supportsExtendedRange) {
         targetColorSpace = FSColorSpaceBT709;
     }
+    if (!hdrInput && targetColorSpace != FSColorSpaceBT709) {
+        targetColorSpace = FSColorSpaceBT709;
+    }
 
     intent.outputColorSpace = targetColorSpace;
     intent.inputTransfer = fs_hdr_input_transfer(frameInfo);
@@ -173,20 +180,27 @@ static float fs_hdr_pick_source_max_nits(const FSHDRFrameInfo *frameInfo)
     intent.useDolbyVisionShader = intent.isDolbyVision &&
                                   frameInfo->decode_path == FS_HDR_DECODE_PATH_FFMPEG_SOFTWARE &&
                                   frameInfo->dolby_vision.valid;
-    intent.needsToneMapping = hdrInput && targetColorSpace == FSColorSpaceBT709;
-    intent.needsGamutMapping = bt2020Input && targetColorSpace != FSColorSpaceBT2100_PQ;
     intent.allowsPassthrough = hdrInput &&
-                               (targetColorSpace == FSColorSpaceBT2100_PQ ||
-                                targetColorSpace == FSColorSpaceSCRGB) &&
+                               targetColorSpace == FSColorSpaceBT2100_PQ &&
                                displayCaps.supportsExtendedRange;
-    intent.needsHDRDrawable = intent.allowsPassthrough;
+    intent.needsToneMapping = hdrInput &&
+                              (targetColorSpace == FSColorSpaceBT709 ||
+                               (targetColorSpace == FSColorSpaceSCRGB && sourceMaxNits > scRGBTargetMaxNits));
+    intent.needsGamutMapping = bt2020Input && targetColorSpace == FSColorSpaceBT709;
+    intent.needsHDRDrawable = hdrInput && targetColorSpace != FSColorSpaceBT709 && displayCaps.supportsExtendedRange;
     intent.needsDithering = targetColorSpace == FSColorSpaceBT709;
     intent.toneMapMode = FSHDRToneMapModeBT2390;
     intent.sourceMinNits = fs_hdr_pick_source_min_nits(frameInfo);
-    intent.sourceMaxNits = fs_hdr_pick_source_max_nits(frameInfo);
+    intent.sourceMaxNits = sourceMaxNits;
     intent.sourceAverageNits = fs_hdr_pick_source_average_nits(frameInfo);
     intent.targetMinNits = kFSHDRDefaultTargetMinNits;
-    intent.targetMaxNits = targetColorSpace == FSColorSpaceBT709 ? kFSHDRDefaultSDRTargetMaxNits : kFSHDRDefaultHDRTargetMaxNits;
+    if (targetColorSpace == FSColorSpaceBT709) {
+        intent.targetMaxNits = kFSHDRDefaultSDRTargetMaxNits;
+    } else if (targetColorSpace == FSColorSpaceSCRGB) {
+        intent.targetMaxNits = scRGBTargetMaxNits;
+    } else {
+        intent.targetMaxNits = kFSHDRDefaultHDRTargetMaxNits;
+    }
     intent.outputHeadroom = fmaxf(displayCaps.headroom, 1.0f);
     return intent;
 }

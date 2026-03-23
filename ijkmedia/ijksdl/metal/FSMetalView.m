@@ -237,8 +237,8 @@ typedef CGRect NSRect;
         self.currentRenderIntent = (FSHDRRenderIntent){0};
     } else if (!attach) {
         FSHDRRenderIntent fallback = {0};
-        fallback.outputColorSpace = self.preferredColorSpace == FSColorSpaceUnknown ? FSColorSpaceBT709 : self.preferredColorSpace;
-        fallback.outputTransfer = fallback.outputColorSpace == FSColorSpaceBT2100_PQ ? FSColorTransferFuncPQ : FSColorTransferFuncLINEAR;
+        fallback.outputColorSpace = FSColorSpaceBT709;
+        fallback.outputTransfer = FSColorTransferFuncLINEAR;
         self.currentRenderIntent = fallback;
     } else {
         self.currentRenderIntent = [self.renderPlanner planForFrameInfo:&attach.hdrFrameInfo

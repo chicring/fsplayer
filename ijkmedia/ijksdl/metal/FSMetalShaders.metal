@@ -151,220 +151,453 @@ float3 rgb_adjust(float3 rgb,float4 rgbAdjustment) {
 
 // mark -hdr helps
 
-constant matrix_float3x3 RGB2020_TO_XYZ = matrix_float3x3(
-                                            0.6370, 0.1446, 0.1689,
-                                            0.2627, 0.6780, 0.0593,
-                                            0.0000, 0.0281, 1.0610);
+constant float kPQM1 = 0.1593017578125;
+constant float kPQM2 = 78.84375;
+constant float kPQC1 = 0.8359375;
+constant float kPQC2 = 18.8515625;
+constant float kPQC3 = 18.6875;
 
-constant matrix_float3x3 XYZ_TO_RGB709 = matrix_float3x3(
-                                            3.2410, -1.5374, -0.4986,
-                                            -0.9692, 1.8760, 0.0416,
-                                            0.0556, -0.2040, 1.0570);
+float fs_safe_div(float x, float y)
+{
+    return x / max(y, 1e-6f);
+}
 
-constant matrix_float3x3 RGB2020_TO_RGB709 = RGB2020_TO_XYZ * XYZ_TO_RGB709;
+float fs_max_component(float3 rgb)
+{
+    return max(max(rgb.r, rgb.g), rgb.b);
+}
 
+float fs_hash12(float2 p)
+{
+    return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.5453123);
+}
 
-// [arib b67 eotf
 float arib_b67_inverse_oetf(float x)
 {
     constexpr float ARIB_B67_A = 0.17883277;
     constexpr float ARIB_B67_B = 0.28466892;
     constexpr float ARIB_B67_C = 0.55991073;
-    
-    // Prevent negative pixels expanding into positive values.
+
     x = max(x, 0.0);
-    if (x <= 0.5)
-        x = (x * x) * (1.0 / 3.0);
-    else
-        x = (exp((x - ARIB_B67_C) / ARIB_B67_A) + ARIB_B67_B) / 12.0;
-    return x;
-}
-
-float3 arib_b67_inverse_oetf_vec(float3 v)
-{
-    float r = arib_b67_inverse_oetf(v.r);
-    float g = arib_b67_inverse_oetf(v.g);
-    float b = arib_b67_inverse_oetf(v.b);
-    return float3(r, g, b);
-}
-
-float ootf_1_2(float x)
-{
-    return x < 0.0 ? x : pow(x, 1.2);
+    if (x <= 0.5) {
+        return (x * x) / 3.0;
+    }
+    return (exp((x - ARIB_B67_C) / ARIB_B67_A) + ARIB_B67_B) / 12.0;
 }
 
 float arib_b67_eotf(float x)
 {
-    return ootf_1_2(arib_b67_inverse_oetf(x));
+    x = arib_b67_inverse_oetf(x);
+    return x < 0.0 ? x : pow(x, 1.2);
 }
 
 float3 arib_b67_eotf_vec(float3 v)
 {
-    float r = arib_b67_eotf(v.r);
-    float g = arib_b67_eotf(v.g);
-    float b = arib_b67_eotf(v.b);
-    return float3(r, g, b);
+    return float3(arib_b67_eotf(v.r),
+                  arib_b67_eotf(v.g),
+                  arib_b67_eotf(v.b));
 }
 
-// arib b67 eotf]
-
-// [st 2084 eotf
-
-float st_2084_eotf(float x)
+float fs_pq_eotf(float x)
 {
-    constexpr float ST2084_M1 = 0.1593017578125;
-    constexpr float ST2084_M2 = 78.84375;
-    constexpr float ST2084_C1 = 0.8359375;
-    constexpr float ST2084_C2 = 18.8515625;
-    constexpr float ST2084_C3 = 18.6875;
-    
-    float xpow = pow(x, float(1.0 / ST2084_M2));
-    float num = max(xpow - ST2084_C1, 0.0);
-    float den = max(ST2084_C2 - ST2084_C3 * xpow, FLT_MIN);
-    return pow(num/den, 1.0 / ST2084_M1);
+    float xpow = pow(clamp(x, 0.0f, 1.0f), 1.0f / kPQM2);
+    float num = max(xpow - kPQC1, 0.0f);
+    float den = max(kPQC2 - kPQC3 * xpow, 1e-6f);
+    return pow(num / den, 1.0f / kPQM1);
 }
 
-float3 st_2084_eotf_vec(float3 v)
+float fs_pq_oetf(float x)
 {
-    float r = st_2084_eotf(v.r);
-    float g = st_2084_eotf(v.g);
-    float b = st_2084_eotf(v.b);
-    return float3(r, g, b);
+    float value = pow(clamp(x, 0.0f, 1.0f), kPQM1);
+    float num = kPQC1 + kPQC2 * value;
+    float den = 1.0f + kPQC3 * value;
+    return pow(fs_safe_div(num, den), kPQM2);
 }
 
-// st 2084 eotf]
-
-// Narkowicz 2015, "ACES Filmic Tone Mapping Curve"
-float tonemap_ACES(float x)
+float3 fs_pq_eotf_vec(float3 v)
 {
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
+    return float3(fs_pq_eotf(v.r), fs_pq_eotf(v.g), fs_pq_eotf(v.b));
+}
+
+float3 fs_pq_oetf_vec(float3 v)
+{
+    return float3(fs_pq_oetf(v.r), fs_pq_oetf(v.g), fs_pq_oetf(v.b));
+}
+
+float fs_bt1886_inverse_eotf(float x)
+{
+    return x <= 0.0 ? 0.0 : pow(x, 1.0 / 2.4);
+}
+
+float3 fs_bt1886_inverse_eotf_vec(float3 v)
+{
+    return float3(fs_bt1886_inverse_eotf(v.r),
+                  fs_bt1886_inverse_eotf(v.g),
+                  fs_bt1886_inverse_eotf(v.b));
+}
+
+float fs_bt1886_eotf(float x)
+{
+    return x <= 0.0 ? 0.0 : pow(x, 2.4);
+}
+
+float3 fs_bt1886_eotf_vec(float3 v)
+{
+    return float3(fs_bt1886_eotf(v.r),
+                  fs_bt1886_eotf(v.g),
+                  fs_bt1886_eotf(v.b));
+}
+
+float fs_tonemap_aces(float x)
+{
+    const float a = 2.51f;
+    const float b = 0.03f;
+    const float c = 2.43f;
+    const float d = 0.59f;
+    const float e = 0.14f;
     return (x * (a * x + b)) / (x * (c * x + d) + e);
 }
 
-// Hable 2010, "Filmic Tonemapping Operators"
-float tonemap_Uncharted2(float x)
+float fs_tonemap_hable_curve(float x)
 {
-    const float A = 0.15;
-    const float B = 0.50;
-    const float C = 0.10;
-    const float D = 0.20;
-    const float E = 0.02;
-    const float F = 0.30;
-    
-    return ((x*(A*x+C*B)+D*E)/(x*(A*x+B)+D*F))-E/F;
+    const float A = 0.15f;
+    const float B = 0.50f;
+    const float C = 0.10f;
+    const float D = 0.20f;
+    const float E = 0.02f;
+    const float F = 0.30f;
+    return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
 }
 
-#define current_tonemap_func tonemap_Uncharted2
-
-float3 tonemap(float3 x)
+float3 fs_bt2020_to_bt709_linear(float3 rgb)
 {
-#define FFMAX(a,b) ((a) > (b) ? (a) : (b))
-#define FFMAX3(a,b,c) FFMAX(FFMAX(a,b),c)
-    
-    float sig = FFMAX(FFMAX3(x.r, x.g, x.b), 1e-6);
-    float sig_orig = sig;
-    float peak = 20.0;
-    sig = current_tonemap_func(sig) / current_tonemap_func(peak);
-    x = x * sig / sig_orig;
-    return x;
+    return float3(
+        dot(rgb, float3(1.6605, -0.5876, -0.0728)),
+        dot(rgb, float3(-0.1246, 1.1329, -0.0083)),
+        dot(rgb, float3(-0.0182, -0.1006, 1.1187))
+    );
 }
 
-float mobius(float in, float j, float peak)
+float3 fs_hpe_lms_to_bt2020_linear(float3 lms)
 {
-    float a, b;
-    
-    if (in <= j)
-        return in;
-    
-    a = -j * j * (peak - 1.0f) / (j * j - 2.0f * j + peak);
-    b = (j * j - 2.0f * j * peak + peak) / max(peak - 1.0f, 1e-6);
-    
-    return (b * b + 2.0f * b * j + j * j) / (b - a) * (in + a) / (in + b);
+    return float3(
+        dot(lms, float3(3.06441879, -2.16597676, 0.10155818)),
+        dot(lms, float3(-0.65612108, 1.78554118, -0.12943749)),
+        dot(lms, float3(0.01736321, -0.04725154, 1.03004253))
+    );
 }
 
-// [bt709
-float rec_1886_inverse_eotf(float x)
+float3 fs_apply_matrix3(float3 v,
+                        float3 row0,
+                        float3 row1,
+                        float3 row2)
 {
-    return x < 0.0 ? 0.0 : pow(x, 1.0 / 2.2);
+    return float3(dot(v, row0), dot(v, row1), dot(v, row2));
 }
 
-float3 rec_1886_inverse_eotf_vec(float3 v)
+float3 fs_apply_dolby_matrix(float3 v, device const float *m)
 {
-    float r = rec_1886_inverse_eotf(v.r);
-    float g = rec_1886_inverse_eotf(v.g);
-    float b = rec_1886_inverse_eotf(v.b);
-    return float3(r, g, b);
+    return fs_apply_matrix3(v,
+                            float3(m[0], m[1], m[2]),
+                            float3(m[3], m[4], m[5]),
+                            float3(m[6], m[7], m[8]));
 }
 
-float rec_1886_eotf(float x)
+float fs_eval_dolby_mmr(device const FSDolbyVisionReshapeComp *comp,
+                        int pieceIndex,
+                        float3 sig)
 {
-    return x < 0.0 ? 0.0 : pow(x, 2.2);
+    float value = comp->mmr_constant[pieceIndex];
+    float3 sigX = sig.xxy * sig.yzz;
+    float4 cross1 = float4(sigX, sigX.x * sig.z);
+    int order = clamp(comp->mmr_order[pieceIndex], 1, FS_HDR_MMR_MAX_ORDER);
+
+    value += dot(sig, float3(comp->mmr_coef[pieceIndex][0][0],
+                             comp->mmr_coef[pieceIndex][0][1],
+                             comp->mmr_coef[pieceIndex][0][2]));
+    value += dot(cross1, float4(comp->mmr_coef[pieceIndex][0][3],
+                                comp->mmr_coef[pieceIndex][0][4],
+                                comp->mmr_coef[pieceIndex][0][5],
+                                comp->mmr_coef[pieceIndex][0][6]));
+
+    if (order >= 2) {
+        float3 sig2 = sig * sig;
+        float4 cross2 = cross1 * cross1;
+        value += dot(sig2, float3(comp->mmr_coef[pieceIndex][1][0],
+                                  comp->mmr_coef[pieceIndex][1][1],
+                                  comp->mmr_coef[pieceIndex][1][2]));
+        value += dot(cross2, float4(comp->mmr_coef[pieceIndex][1][3],
+                                    comp->mmr_coef[pieceIndex][1][4],
+                                    comp->mmr_coef[pieceIndex][1][5],
+                                    comp->mmr_coef[pieceIndex][1][6]));
+    }
+
+    if (order >= 3) {
+        float3 sig3 = sig * sig * sig;
+        float4 cross3 = cross1 * cross1 * cross1;
+        value += dot(sig3, float3(comp->mmr_coef[pieceIndex][2][0],
+                                  comp->mmr_coef[pieceIndex][2][1],
+                                  comp->mmr_coef[pieceIndex][2][2]));
+        value += dot(cross3, float4(comp->mmr_coef[pieceIndex][2][3],
+                                    comp->mmr_coef[pieceIndex][2][4],
+                                    comp->mmr_coef[pieceIndex][2][5],
+                                    comp->mmr_coef[pieceIndex][2][6]));
+    }
+
+    return value;
 }
 
-float3 rec_1886_eotf_vec(float3 v)
+float3 fs_dolby_reshape(float3 signal, device const FSDolbyVisionRenderParams *dv)
 {
-    float r = rec_1886_eotf(v.r);
-    float g = rec_1886_eotf(v.g);
-    float b = rec_1886_eotf(v.b);
-    return float3(r, g, b);
-}
+    float3 sig = clamp(signal, 0.0f, 1.0f);
 
-// bt709]
-// mark -hdr helps
+    for (int c = 0; c < FS_HDR_COMPONENT_COUNT; c++) {
+        device const FSDolbyVisionReshapeComp *comp = &dv->comp[c];
+        int pieceCount = clamp(comp->num_pivots - 1, 0, FS_HDR_MAX_PIECES);
+        float s = sig[c];
+        int pieceIndex = 0;
 
-float3 hdr2sdr(float3 rgb_2020,float x,float hdrPercentage,FSColorTransferFunc transferFun)
-{
-    //已经使用矩阵转为RGB了，这里的RGB是经过 伽马 校正的，因此是曲线的
-    if (x > 0 && x <= hdrPercentage) {
-        
-        // 1、HDR 非线性电信号转为 HDR 线性光信号（EOTF）
-        float3 myFragColor;
-        float peak_luminance = 50.0;
-        if (transferFun == FSColorTransferFuncPQ) {
-            float to_linear_scale = 10000.0 / peak_luminance;
-            myFragColor = to_linear_scale * st_2084_eotf_vec(rgb_2020);
-        } else if (transferFun == FSColorTransferFuncHLG) {
-            float to_linear_scale = 1000.0 / peak_luminance;
-            myFragColor = to_linear_scale * arib_b67_eotf_vec(rgb_2020);
-        } else {
-            myFragColor = rec_1886_eotf_vec(rgb_2020);
+        if (pieceCount <= 0) {
+            continue;
         }
-        
-        // 2、HDR 线性光信号做颜色空间转换（Color Space Converting）
-        
-        // RGB → XYZ：将源 RGB 颜色转换到 CIE XYZ 中间颜色空间
-        // XYZ → RGB：将 XYZ 颜色转换到目标 RGB 颜色空间
-        // 这两个步骤可以合并为一个矩阵运算：RGB_target = M * RGB_source，其中 M 是组合变换矩阵。
-        myFragColor = myFragColor * RGB2020_TO_RGB709;
-    
-        // 3、HDR 线性光信号色调映射为 SDR 线性光信号（Tone Mapping）
-        myFragColor = tonemap(myFragColor);
 
-        // 4、SDR 线性光信号转 SDR 非线性电信号（OETF）
-        myFragColor = rec_1886_inverse_eotf_vec(myFragColor);
-        return myFragColor;
+        for (int i = 0; i < pieceCount; i++) {
+            float hi = comp->pivots[i + 1];
+            if (i == pieceCount - 1 || s < hi) {
+                pieceIndex = i;
+                break;
+            }
+        }
+
+        if (comp->method[pieceIndex] == FS_DV_RESHAPE_MMR) {
+            s = fs_eval_dolby_mmr(comp, pieceIndex, sig);
+        } else {
+            float c0 = comp->poly_coef[pieceIndex][0];
+            float c1 = comp->poly_coef[pieceIndex][1];
+            float c2 = comp->poly_coef[pieceIndex][2];
+            s = (c2 * s + c1) * s + c0;
+        }
+
+        sig[c] = clamp(s, comp->pivots[0], comp->pivots[comp->num_pivots - 1]);
+    }
+
+    return sig;
+}
+
+float3 fs_decode_dolby_vision_linear_bt2020(float3 signal,
+                                            device const FSHDRFragmentUniforms *hdrUniforms)
+{
+    device const FSDolbyVisionRenderParams *dv = &hdrUniforms->dolbyVision;
+    float3 reshaped = fs_dolby_reshape(signal, dv);
+    float3 nonlinear = fs_apply_dolby_matrix(reshaped, dv->nonlinear_matrix) +
+                       float3(dv->nonlinear_offset[0], dv->nonlinear_offset[1], dv->nonlinear_offset[2]);
+    float3 lms = fs_pq_eotf_vec(clamp(nonlinear, 0.0f, 1.0f));
+    lms = max(fs_apply_dolby_matrix(lms, dv->linear_matrix), 0.0f);
+    return max(fs_hpe_lms_to_bt2020_linear(lms), 0.0f);
+}
+
+float3 fs_legacy_hdr2sdr(float3 rgb2020, float x, float hdrPercentage, FSColorTransferFunc transferFun)
+{
+    if (!(x > 0.0f && x <= hdrPercentage)) {
+        return rgb2020;
+    }
+
+    float3 linearColor;
+    if (transferFun == FSColorTransferFuncPQ) {
+        linearColor = (10000.0f / 100.0f) * fs_pq_eotf_vec(rgb2020);
+    } else if (transferFun == FSColorTransferFuncHLG) {
+        linearColor = (1000.0f / 100.0f) * arib_b67_eotf_vec(rgb2020);
     } else {
-        return rgb_2020;
+        linearColor = fs_bt1886_eotf_vec(rgb2020);
+    }
+
+    float peak = max(fs_max_component(linearColor), 1e-6f);
+    float mapped = fs_tonemap_hable_curve(peak) / fs_tonemap_hable_curve(20.0f);
+    linearColor *= mapped / peak;
+    linearColor = fs_bt2020_to_bt709_linear(linearColor);
+    return fs_bt1886_inverse_eotf_vec(max(linearColor, 0.0f));
+}
+
+float4 yuv2rgb(float3 yuv, device FSConvertMatrix *convertMatrix, float x)
+{
+    float3 rgb = convertMatrix->colorMatrix * (yuv + convertMatrix->offset);
+    float3 outColor = convertMatrix->hdr ? fs_legacy_hdr2sdr(rgb, x, convertMatrix->hdrPercentage, convertMatrix->transferFun) : rgb;
+    return float4(rgb_adjust(outColor, convertMatrix->adjustment), 1.0f);
+}
+
+float3 fs_linearize_hdr_rgb(float3 rgb, int transfer)
+{
+    switch (transfer) {
+        case FSColorTransferFuncPQ:
+            return fs_pq_eotf_vec(clamp(rgb, 0.0f, 1.0f));
+        case FSColorTransferFuncHLG:
+            return 0.1f * arib_b67_eotf_vec(clamp(rgb, 0.0f, 1.0f));
+        default:
+            return max(rgb, 0.0f);
     }
 }
 
-float4 yuv2rgb(float3 yuv,device FSConvertMatrix* convertMatrix,float x)
+float fs_bt2390_map_pq(float x,
+                       float inputMinPQ,
+                       float inputMaxPQ,
+                       float outputMinPQ,
+                       float outputMaxPQ,
+                       float kneeOffset)
 {
-    //先把 [0.0,1.0] 范围的YUV 处理为 [0.0,1.0] 范围的RGB
-    float3 rgb = convertMatrix->colorMatrix * (yuv + convertMatrix->offset);
-    //HDR 转 SDR
-    float3 myFragColor;
-    if (convertMatrix->hdr) {
-        myFragColor = hdr2sdr(rgb,x,convertMatrix->hdrPercentage,convertMatrix->transferFun);
-    } else {
-        myFragColor = rgb;
+    float inputRange = max(inputMaxPQ - inputMinPQ, 1e-6f);
+    float minLum = clamp((outputMinPQ - inputMinPQ) / inputRange, 0.0f, 1.0f);
+    float maxLum = clamp((outputMaxPQ - inputMinPQ) / inputRange, minLum, 1.0f);
+    float ks = (1.0f + kneeOffset) * maxLum - kneeOffset;
+    float bp = minLum > 0.0f ? min(1.0f / max(minLum, 1e-6f), 4.0f) : 4.0f;
+    float gainInv = 1.0f + minLum / max(maxLum, 1e-6f) * pow(max(1.0f - maxLum, 0.0f), bp);
+    float gain = maxLum < 1.0f ? 1.0f / gainInv : 1.0f;
+    float value = clamp((x - inputMinPQ) / inputRange, 0.0f, 1.0f);
+
+    if (ks < 1.0f && value >= ks) {
+        float tb = fs_safe_div(value - ks, 1.0f - ks);
+        float tb2 = tb * tb;
+        float tb3 = tb2 * tb;
+        value = (2.0f * tb3 - 3.0f * tb2 + 1.0f) * ks +
+                (tb3 - 2.0f * tb2 + tb) * (1.0f - ks) +
+                (-2.0f * tb3 + 3.0f * tb2) * maxLum;
     }
-    //color adjustment
-    return float4(rgb_adjust(myFragColor,convertMatrix->adjustment),1.0);
+
+    if (value < 1.0f) {
+        value += minLum * pow(max(1.0f - value, 0.0f), bp);
+        value = gain * (value - minLum) + minLum;
+    }
+
+    return clamp(value * inputRange + inputMinPQ, outputMinPQ, outputMaxPQ);
+}
+
+float3 fs_tone_map_bt2390(float3 rgb, device const FSHDRFragmentUniforms *hdrUniforms)
+{
+    float peak = fs_max_component(rgb);
+    if (peak <= 0.0f) {
+        return rgb;
+    }
+
+    float inputMinPQ = fs_pq_oetf(hdrUniforms->sourceMinNits / 10000.0f);
+    float inputMaxPQ = fs_pq_oetf(max(hdrUniforms->sourceMaxNits / 10000.0f, peak));
+    float outputMinPQ = fs_pq_oetf(hdrUniforms->targetMinNits / 10000.0f);
+    float outputMaxPQ = fs_pq_oetf(hdrUniforms->targetMaxNits / 10000.0f);
+    float mappedPeakPQ = fs_bt2390_map_pq(fs_pq_oetf(peak),
+                                          inputMinPQ,
+                                          inputMaxPQ,
+                                          outputMinPQ,
+                                          outputMaxPQ,
+                                          1.0f);
+    float mappedPeak = fs_pq_eotf(mappedPeakPQ);
+    return rgb * fs_safe_div(mappedPeak, peak);
+}
+
+float3 fs_tone_map_hable(float3 rgb, device const FSHDRFragmentUniforms *hdrUniforms)
+{
+    float peak = fs_max_component(rgb);
+    float sourcePeak = max(hdrUniforms->sourceMaxNits / 10000.0f, peak);
+    float targetPeak = max(hdrUniforms->targetMaxNits / 10000.0f, 1e-6f);
+    float scale = 1.0f / fs_tonemap_hable_curve(max(sourcePeak / targetPeak, 1.0f));
+    float mappedPeak = scale * fs_tonemap_hable_curve(peak / targetPeak) * targetPeak;
+    return peak > 0.0f ? rgb * (mappedPeak / peak) : rgb;
+}
+
+float3 fs_tone_map_aces(float3 rgb, device const FSHDRFragmentUniforms *hdrUniforms)
+{
+    float peak = fs_max_component(rgb);
+    float sourcePeak = max(hdrUniforms->sourceMaxNits / 10000.0f, peak);
+    float targetPeak = max(hdrUniforms->targetMaxNits / 10000.0f, 1e-6f);
+    float scale = 1.0f / fs_tonemap_aces(max(sourcePeak / targetPeak, 1.0f));
+    float mappedPeak = scale * fs_tonemap_aces(peak / targetPeak) * targetPeak;
+    return peak > 0.0f ? rgb * (mappedPeak / peak) : rgb;
+}
+
+float3 fs_apply_tone_map(float3 rgb, device const FSHDRFragmentUniforms *hdrUniforms)
+{
+    if (!hdrUniforms->needsToneMapping) {
+        return rgb;
+    }
+
+    switch (hdrUniforms->toneMapMode) {
+        case FSHDRToneMapModeHable:
+            return fs_tone_map_hable(rgb, hdrUniforms);
+        case FSHDRToneMapModeACES:
+            return fs_tone_map_aces(rgb, hdrUniforms);
+        default:
+            return fs_tone_map_bt2390(rgb, hdrUniforms);
+    }
+}
+
+float3 fs_soft_gamut_map_bt709(float3 rgb)
+{
+    float luma = dot(max(rgb, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
+    float minValue = min(min(rgb.r, rgb.g), rgb.b);
+    float maxValue = max(max(rgb.r, rgb.g), rgb.b);
+    float excursion = max(max(-minValue, 0.0f), max(maxValue - 1.0f, 0.0f));
+    float compression = clamp(excursion / (1.0f + excursion), 0.0f, 1.0f);
+    float3 compressed = mix(rgb, float3(luma), compression);
+    return clamp(compressed, 0.0f, 1.0f);
+}
+
+float3 fs_encode_output_rgb(float3 linearBt2020,
+                            device const FSHDRFragmentUniforms *hdrUniforms)
+{
+    float3 working = max(linearBt2020, 0.0f);
+    working = fs_apply_tone_map(working, hdrUniforms);
+
+    switch (hdrUniforms->outputColorSpace) {
+        case FSColorSpaceBT2100_PQ:
+            return fs_pq_oetf_vec(clamp(working, 0.0f, 1.0f));
+        case FSColorSpaceSCRGB: {
+            float3 rgb709 = fs_bt2020_to_bt709_linear(working);
+            return rgb709 * (10000.0f / 100.0f);
+        }
+        default: {
+            float3 rgb709 = fs_bt2020_to_bt709_linear(working);
+            if (hdrUniforms->needsGamutMapping) {
+                rgb709 = fs_soft_gamut_map_bt709(rgb709);
+            }
+            rgb709 *= 10000.0f / max(hdrUniforms->targetMaxNits, 1.0f);
+            return fs_bt1886_inverse_eotf_vec(clamp(rgb709, 0.0f, 1.0f));
+        }
+    }
+}
+
+float3 fs_apply_dithering(float3 rgb,
+                          float2 texCoord,
+                          float2 textureSize,
+                          device const FSHDRFragmentUniforms *hdrUniforms)
+{
+    if (!hdrUniforms->needsDithering) {
+        return rgb;
+    }
+    float2 pixel = floor(texCoord * max(textureSize, float2(1.0f)));
+    float noise = fs_hash12(pixel + float2(0.5f)) - 0.5f;
+    return rgb + noise / 255.0f;
+}
+
+float4 fs_process_hdr_signal(float3 signal,
+                             device FSConvertMatrix *convertMatrix,
+                             device const FSHDRFragmentUniforms *hdrUniforms,
+                             float2 texCoord,
+                             float2 textureSize)
+{
+    float3 linearBt2020;
+    if (hdrUniforms->useDolbyVisionShader && hdrUniforms->dolbyVision.valid) {
+        linearBt2020 = fs_decode_dolby_vision_linear_bt2020(signal, hdrUniforms);
+    } else {
+        float3 encodedRgb = convertMatrix->colorMatrix * (signal + convertMatrix->offset);
+        linearBt2020 = fs_linearize_hdr_rgb(encodedRgb, hdrUniforms->inputTransfer);
+    }
+
+    float3 output = fs_encode_output_rgb(linearBt2020, hdrUniforms);
+    output = rgb_adjust(output, convertMatrix->adjustment);
+    output = fs_apply_dithering(output, texCoord, textureSize, hdrUniforms);
+
+    if (hdrUniforms->outputColorSpace == FSColorSpaceSCRGB) {
+        return float4(output, 1.0f);
+    }
+
+    return float4(clamp(output, 0.0f, 1.0f), 1.0f);
 }
 
 /// @brief hdr BiPlanar fragment shader
@@ -382,7 +615,15 @@ fragment float4 nv12FragmentShader(RasterizerData input [[stage_in]],
     
     float3 yuv = float3(textureY.sample(textureSampler,  input.textureCoordinate).r,
                         textureUV.sample(textureSampler, input.textureCoordinate).rg);
-    return yuv2rgb(yuv,fragmentShaderArgs.convertMatrix,input.textureCoordinate.x);
+    device const FSHDRFragmentUniforms *hdrUniforms = fragmentShaderArgs.hdrUniforms;
+    if (hdrUniforms && hdrUniforms->valid && hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR) {
+        return fs_process_hdr_signal(yuv,
+                                     fragmentShaderArgs.convertMatrix,
+                                     hdrUniforms,
+                                     input.textureCoordinate,
+                                     float2(textureY.get_width(), textureY.get_height()));
+    }
+    return yuv2rgb(yuv, fragmentShaderArgs.convertMatrix, input.textureCoordinate.x);
 }
 
 /// @brief yuv420p fragment shader
@@ -402,8 +643,15 @@ fragment float4 yuv420pFragmentShader(RasterizerData input [[stage_in]],
     float3 yuv = float3(textureY.sample(textureSampler, input.textureCoordinate).r,
                         textureU.sample(textureSampler, input.textureCoordinate).r,
                         textureV.sample(textureSampler, input.textureCoordinate).r);
-    
-    return yuv2rgb(yuv,fragmentShaderArgs.convertMatrix,input.textureCoordinate.x);
+    device const FSHDRFragmentUniforms *hdrUniforms = fragmentShaderArgs.hdrUniforms;
+    if (hdrUniforms && hdrUniforms->valid && hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR) {
+        return fs_process_hdr_signal(yuv,
+                                     fragmentShaderArgs.convertMatrix,
+                                     hdrUniforms,
+                                     input.textureCoordinate,
+                                     float2(textureY.get_width(), textureY.get_height()));
+    }
+    return yuv2rgb(yuv, fragmentShaderArgs.convertMatrix, input.textureCoordinate.x);
 }
 
 /// @brief uyvy422 fragment shader
@@ -419,8 +667,15 @@ fragment float4 uyvy422FragmentShader(RasterizerData input [[stage_in]],
     texture2d<float> textureY = fragmentShaderArgs.textureY;
     float3 tc = textureY.sample(textureSampler, input.textureCoordinate).rgb;
     float3 yuv = float3(tc.g, tc.b, tc.r);
-    
-    return yuv2rgb(yuv,fragmentShaderArgs.convertMatrix,input.textureCoordinate.x);
+    device const FSHDRFragmentUniforms *hdrUniforms = fragmentShaderArgs.hdrUniforms;
+    if (hdrUniforms && hdrUniforms->valid && hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR) {
+        return fs_process_hdr_signal(yuv,
+                                     fragmentShaderArgs.convertMatrix,
+                                     hdrUniforms,
+                                     input.textureCoordinate,
+                                     float2(textureY.get_width(), textureY.get_height()));
+    }
+    return yuv2rgb(yuv, fragmentShaderArgs.convertMatrix, input.textureCoordinate.x);
 }
 
 /// @brief ayuv fragment shader
@@ -436,8 +691,15 @@ fragment float4 ayuvFragmentShader(RasterizerData input [[stage_in]],
     texture2d<float> textureY = fragmentShaderArgs.textureY;
     float4 tc = textureY.sample(textureSampler, input.textureCoordinate).rgba;
     float3 yuv = float3(tc.g, tc.b, tc.a);
-    
-    return yuv2rgb(yuv,fragmentShaderArgs.convertMatrix,input.textureCoordinate.x);
+    device const FSHDRFragmentUniforms *hdrUniforms = fragmentShaderArgs.hdrUniforms;
+    if (hdrUniforms && hdrUniforms->valid && hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR) {
+        return fs_process_hdr_signal(yuv,
+                                     fragmentShaderArgs.convertMatrix,
+                                     hdrUniforms,
+                                     input.textureCoordinate,
+                                     float2(textureY.get_width(), textureY.get_height()));
+    }
+    return yuv2rgb(yuv, fragmentShaderArgs.convertMatrix, input.textureCoordinate.x);
 }
 
 /// @brief bgra fragment shader
@@ -454,6 +716,20 @@ fragment float4 bgraFragmentShader(RasterizerData input [[stage_in]],
     float4 rgba = textureY.sample(textureSampler, input.textureCoordinate);
     //color adjustment
     device FSConvertMatrix* convertMatrix = fragmentShaderArgs.convertMatrix;
+    device const FSHDRFragmentUniforms *hdrUniforms = fragmentShaderArgs.hdrUniforms;
+    if (hdrUniforms && hdrUniforms->valid && hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR) {
+        float3 linearBt2020 = fs_linearize_hdr_rgb(rgba.rgb, hdrUniforms->inputTransfer);
+        float3 output = fs_encode_output_rgb(linearBt2020, hdrUniforms);
+        output = rgb_adjust(output, convertMatrix->adjustment);
+        output = fs_apply_dithering(output,
+                                    input.textureCoordinate,
+                                    float2(textureY.get_width(), textureY.get_height()),
+                                    hdrUniforms);
+        if (hdrUniforms->outputColorSpace == FSColorSpaceSCRGB) {
+            return float4(output, rgba.a);
+        }
+        return float4(clamp(output, 0.0f, 1.0f), rgba.a);
+    }
     return float4(rgb_adjust(rgba.rgb, convertMatrix->adjustment),rgba.a);
 }
 
@@ -471,6 +747,20 @@ fragment float4 argbFragmentShader(RasterizerData input [[stage_in]],
     float4 grab = textureY.sample(textureSampler, input.textureCoordinate);
     //color adjustment
     device FSConvertMatrix* convertMatrix = fragmentShaderArgs.convertMatrix;
+    device const FSHDRFragmentUniforms *hdrUniforms = fragmentShaderArgs.hdrUniforms;
+    if (hdrUniforms && hdrUniforms->valid && hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR) {
+        float3 linearBt2020 = fs_linearize_hdr_rgb(grab.gra, hdrUniforms->inputTransfer);
+        float3 output = fs_encode_output_rgb(linearBt2020, hdrUniforms);
+        output = rgb_adjust(output, convertMatrix->adjustment);
+        output = fs_apply_dithering(output,
+                                    input.textureCoordinate,
+                                    float2(textureY.get_width(), textureY.get_height()),
+                                    hdrUniforms);
+        if (hdrUniforms->outputColorSpace == FSColorSpaceSCRGB) {
+            return float4(output, grab.b);
+        }
+        return float4(clamp(output, 0.0f, 1.0f), grab.b);
+    }
     return float4(rgb_adjust(grab.gra, convertMatrix->adjustment),grab.b);
 }
 

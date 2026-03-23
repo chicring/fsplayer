@@ -7,6 +7,7 @@
 //
 
 #import <simd/simd.h>
+#include "../../wrapper/apple/FSColorSpace.h"
 #include "../ijksdl_hdr_frame.h"
 
 typedef enum FSYUV2RGBColorMatrixType
