@@ -75,6 +75,7 @@ static uint32_t fs_hdr_log_signature(FSHDRFrameInfo frameInfo,
                                      FSMetalPipelineMeta *pipelineMeta)
 {
     uint32_t signature = 0;
+    uint32_t headroomQ = (uint32_t)FFMIN(FFMAX((int)(renderIntent.outputHeadroom * 100.0f + 0.5f), 0), 0x3ff);
     signature |= (uint32_t)(frameInfo.content_type & 0x7);
     signature |= (uint32_t)(frameInfo.decode_path & 0x3) << 3;
     signature |= (uint32_t)(renderIntent.outputColorSpace & 0x7) << 5;
@@ -85,6 +86,7 @@ static uint32_t fs_hdr_log_signature(FSHDRFrameInfo frameInfo,
     signature |= (uint32_t)(pipelineMeta.convertMatrixType & 0x7) << 12;
     signature |= (uint32_t)(frameInfo.dolby_vision.profile & 0x1f) << 16;
     signature |= (uint32_t)(frameInfo.dolby_vision.has_mmr & 0x1) << 21;
+    signature |= (uint32_t)(headroomQ & 0x3ff) << 22;
     return signature;
 }
 
@@ -286,7 +288,7 @@ static uint32_t fs_hdr_log_signature(FSHDRFrameInfo frameInfo,
             uint32_t signature = fs_hdr_log_signature(_hdrFrameInfo, _renderIntent, self.pipelineMeta);
             if (_hdrLogSignature != signature) {
                 _hdrLogSignature = signature;
-                ALOGI("hdr state: content=%s decode=%s dvProfile=%d mmr=%d shader=%d target=%s toneMap=%d gamut=%d hdrDrawable=%d matrix=%s\n",
+                ALOGI("hdr state: content=%s decode=%s dvProfile=%d mmr=%d shader=%d target=%s toneMap=%d gamut=%d hdrDrawable=%d matrix=%s headroom=%.2f sourceMax=%.1f targetMax=%.1f\n",
                       fs_hdr_content_type_name(_hdrFrameInfo.content_type),
                       fs_hdr_decode_path_name(_hdrFrameInfo.decode_path),
                       _hdrFrameInfo.dolby_vision.profile,
@@ -296,7 +298,10 @@ static uint32_t fs_hdr_log_signature(FSHDRFrameInfo frameInfo,
                       _renderIntent.needsToneMapping,
                       _renderIntent.needsGamutMapping,
                       _renderIntent.needsHDRDrawable,
-                      fs_hdr_matrix_name(self.pipelineMeta.convertMatrixType));
+                      fs_hdr_matrix_name(self.pipelineMeta.convertMatrixType),
+                      _renderIntent.outputHeadroom,
+                      _renderIntent.sourceMaxNits,
+                      _renderIntent.targetMaxNits);
             }
         }
     }
