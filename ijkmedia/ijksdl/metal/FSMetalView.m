@@ -388,7 +388,11 @@ static void fs_log_hdr_attachment_promotion_once(FSHDRFrameInfo info)
     }
 
     FSHDRFrameInfo info = attach.hdrFrameInfo;
-    if (!info.valid || info.content_type != FS_HDR_CONTENT_TYPE_SDR) {
+    if (!info.valid) {
+        info.valid = 1;
+        info.content_type = FS_HDR_CONTENT_TYPE_SDR;
+    }
+    if (info.content_type != FS_HDR_CONTENT_TYPE_SDR) {
         return;
     }
 
