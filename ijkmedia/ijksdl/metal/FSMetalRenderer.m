@@ -56,7 +56,7 @@
 
 - (BOOL)isHDR
 {
-    return self.pipelineMeta.hdr;
+    return self.pipelineMeta.hdr || _renderIntent.usesHDRPipeline;
 }
 
 - (BOOL)matchPixelBuffer:(CVPixelBufferRef)pixelBuffer
@@ -304,16 +304,26 @@
 
         uniforms.valid = _hdrFrameInfo.valid;
         uniforms.contentType = _hdrFrameInfo.content_type;
+        uniforms.inputTransfer = _renderIntent.inputTransfer;
         uniforms.outputColorSpace = _renderIntent.outputColorSpace;
         uniforms.outputTransfer = _renderIntent.outputTransfer;
+        uniforms.useDolbyVisionShader = _renderIntent.useDolbyVisionShader;
         uniforms.needsToneMapping = _renderIntent.needsToneMapping;
         uniforms.needsGamutMapping = _renderIntent.needsGamutMapping;
         uniforms.allowsPassthrough = _renderIntent.allowsPassthrough;
-        uniforms.toneMapMode = FSHDRToneMapModeBT2390;
+        uniforms.needsHDRDrawable = _renderIntent.needsHDRDrawable;
+        uniforms.needsDithering = _renderIntent.needsDithering;
+        uniforms.toneMapMode = _renderIntent.toneMapMode;
         uniforms.masteringMinNits = _hdrFrameInfo.mastering_min_nits;
         uniforms.masteringMaxNits = _hdrFrameInfo.mastering_max_nits;
         uniforms.maxCLL = _hdrFrameInfo.max_cll;
         uniforms.maxFALL = _hdrFrameInfo.max_fall;
+        uniforms.sourceMinNits = _renderIntent.sourceMinNits;
+        uniforms.sourceMaxNits = _renderIntent.sourceMaxNits;
+        uniforms.sourceAverageNits = _renderIntent.sourceAverageNits;
+        uniforms.targetMinNits = _renderIntent.targetMinNits;
+        uniforms.targetMaxNits = _renderIntent.targetMaxNits;
+        uniforms.outputHeadroom = _renderIntent.outputHeadroom;
         uniforms.dolbyVision = _hdrFrameInfo.dolby_vision;
 
         self.hdrUniformBuff = [_device newBufferWithBytes:&uniforms

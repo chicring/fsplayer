@@ -16,17 +16,29 @@ typedef struct FSHDRDisplayCaps {
     int supportsExtendedRange;
     int supportsPQOutput;
     int supportsSCRGBOutput;
+    float headroom;
 } FSHDRDisplayCaps;
 
 typedef struct FSHDRRenderIntent {
     int valid;
     int usesHDRPipeline;
     int isDolbyVision;
+    int useDolbyVisionShader;
     int needsToneMapping;
     int needsGamutMapping;
     int allowsPassthrough;
+    int needsHDRDrawable;
+    int needsDithering;
+    int toneMapMode;
     FSColorSpace outputColorSpace;
+    FSColorTransferFunc inputTransfer;
     FSColorTransferFunc outputTransfer;
+    float sourceMinNits;
+    float sourceMaxNits;
+    float sourceAverageNits;
+    float targetMinNits;
+    float targetMaxNits;
+    float outputHeadroom;
 } FSHDRRenderIntent;
 
 NS_ASSUME_NONNULL_BEGIN

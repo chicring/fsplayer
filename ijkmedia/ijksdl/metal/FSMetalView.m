@@ -11,6 +11,7 @@
 #import <AVFoundation/AVUtilities.h>
 #import <CoreImage/CIContext.h>
 #import <mach/mach_time.h>
+#import <objc/message.h>
 
 // Header shared between C code here, which executes Metal API commands, and .metal files, which
 // uses these types as inputs to the shaders.
@@ -109,10 +110,12 @@ typedef CGRect NSRect;
     
     // Create the command queue
     self.commandQueue = [self.device newCommandQueue];
+    self.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
     self.autoResizeDrawable = YES;
     // important;then use draw method drive rendering.
     self.enableSetNeedsDisplay = NO;
     self.paused = YES;
+    [self refreshRenderIntentForAttach:nil];
     //set default bg color.
     [self setBackgroundColor:0 g:0 b:0];
     
@@ -160,17 +163,88 @@ typedef CGRect NSRect;
     caps.supportsExtendedRange = headroom > 1.0;
     caps.supportsPQOutput = caps.supportsExtendedRange;
     caps.supportsSCRGBOutput = caps.supportsExtendedRange;
+    caps.headroom = (float) MAX(headroom, 1.0);
     return caps;
+}
+
+- (void)invalidatePipelines
+{
+    [self.pilelineLock lock];
+    self.picturePipeline = nil;
+    self.subPipeline = nil;
+    [self.pilelineLock unlock];
+}
+
+- (void)setExtendedDynamicRangeEnabled:(BOOL)enabled
+{
+    id layer = self.layer;
+    SEL selector = NSSelectorFromString(@"setWantsExtendedDynamicRangeContent:");
+    if (layer && [layer respondsToSelector:selector]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(layer, selector, enabled);
+    }
+}
+
+- (CGColorSpaceRef)copyColorSpaceForIntent:(FSHDRRenderIntent)intent
+{
+    if (intent.needsHDRDrawable) {
+        if (intent.outputColorSpace == FSColorSpaceBT2100_PQ) {
+            if (@available(macOS 11.0, ios 14.0, tvOS 14.0, *)) {
+                return CGColorSpaceCreateWithName(kCGColorSpaceITUR_2100_PQ);
+            }
+        }
+        return CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB);
+    }
+    return CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+}
+
+- (void)applyRenderIntentConfiguration:(FSHDRRenderIntent)intent
+{
+    MTLPixelFormat targetPixelFormat = intent.needsHDRDrawable ? MTLPixelFormatRGBA16Float : MTLPixelFormatBGRA8Unorm;
+    BOOL pixelFormatChanged = self.colorPixelFormat != targetPixelFormat;
+    CGColorSpaceRef targetColorSpace = [self copyColorSpaceForIntent:intent];
+    BOOL colorSpaceChanged = NO;
+
+    if (targetColorSpace) {
+        if (self.colorspace == NULL) {
+            colorSpaceChanged = YES;
+        } else {
+            colorSpaceChanged = !CFEqual(self.colorspace, targetColorSpace);
+        }
+    } else if (self.colorspace != NULL) {
+        colorSpaceChanged = YES;
+    }
+
+    if (pixelFormatChanged) {
+        self.colorPixelFormat = targetPixelFormat;
+    }
+    if (colorSpaceChanged) {
+        self.colorspace = targetColorSpace;
+    }
+    [self setExtendedDynamicRangeEnabled:intent.needsHDRDrawable];
+
+    if (targetColorSpace) {
+        CGColorSpaceRelease(targetColorSpace);
+    }
+
+    if (pixelFormatChanged) {
+        [self invalidatePipelines];
+    }
 }
 
 - (void)refreshRenderIntentForAttach:(FSOverlayAttach *)attach
 {
-    if (!attach || !self.renderPlanner) {
+    if (!self.renderPlanner) {
         self.currentRenderIntent = (FSHDRRenderIntent){0};
-        return;
+    } else if (!attach) {
+        FSHDRRenderIntent fallback = {0};
+        fallback.outputColorSpace = self.preferredColorSpace == FSColorSpaceUnknown ? FSColorSpaceBT709 : self.preferredColorSpace;
+        fallback.outputTransfer = fallback.outputColorSpace == FSColorSpaceBT2100_PQ ? FSColorTransferFuncPQ : FSColorTransferFuncLINEAR;
+        self.currentRenderIntent = fallback;
+    } else {
+        self.currentRenderIntent = [self.renderPlanner planForFrameInfo:&attach.hdrFrameInfo
+                                                            displayCaps:[self currentDisplayCaps]];
     }
-    self.currentRenderIntent = [self.renderPlanner planForFrameInfo:&attach.hdrFrameInfo
-                                                        displayCaps:[self currentDisplayCaps]];
+    [self applyRenderIntentConfiguration:self.currentRenderIntent];
 }
 
 - (instancetype)initWithCoder:(NSCoder *)coder
@@ -262,7 +336,10 @@ typedef CGRect NSRect;
         return YES;
     }
     
-    FSMetalSubtitlePipeline *subPipeline = [[FSMetalSubtitlePipeline alloc] initWithDevice:self.device inFormat:FSMetalSubtitleInFormatBRGA outFormat:FSMetalSubtitleOutFormatDIRECT];
+    FSMetalSubtitlePipeline *subPipeline = [[FSMetalSubtitlePipeline alloc] initWithDevice:self.device
+                                                                                  inFormat:FSMetalSubtitleInFormatBRGA
+                                                                                 outFormat:FSMetalSubtitleOutFormatDIRECT
+                                                                          colorPixelFormat:self.colorPixelFormat];
     
     BOOL created = [subPipeline createRenderPipelineIfNeed];
     

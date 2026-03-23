@@ -67,16 +67,26 @@ typedef struct {
 typedef struct {
     int valid;
     int contentType;
+    int inputTransfer;
     int outputColorSpace;
     int outputTransfer;
+    int useDolbyVisionShader;
     int needsToneMapping;
     int needsGamutMapping;
     int allowsPassthrough;
+    int needsHDRDrawable;
+    int needsDithering;
     int toneMapMode;
     float masteringMinNits;
     float masteringMaxNits;
     float maxCLL;
     float maxFALL;
+    float sourceMinNits;
+    float sourceMaxNits;
+    float sourceAverageNits;
+    float targetMinNits;
+    float targetMaxNits;
+    float outputHeadroom;
     FSDolbyVisionRenderParams dolbyVision;
 } FSHDRFragmentUniforms;
 
