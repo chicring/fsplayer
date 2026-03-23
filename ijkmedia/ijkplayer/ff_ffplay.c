@@ -1265,6 +1265,18 @@ static float fs_normalize_u16(uint32_t value, float scale)
     return (float) value / scale;
 }
 
+static const char *fs_hdr_decode_path_name(int decode_path)
+{
+    switch (decode_path) {
+        case FS_HDR_DECODE_PATH_VIDEOTOOLBOX:
+            return "videotoolbox";
+        case FS_HDR_DECODE_PATH_FFMPEG_SOFTWARE:
+            return "ffmpeg-sw";
+        default:
+            return "unknown";
+    }
+}
+
 static void fs_fill_mastering_display_metadata(const AVFrame *frame, FSHDRFrameInfo *info)
 {
     AVFrameSideData *metadata_sd = av_frame_get_side_data((AVFrame *)frame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
@@ -1419,22 +1431,29 @@ static void fs_fill_dolby_vision_metadata(const AVFrame *frame, FSHDRFrameInfo *
         int o = 0;
         int k = 0;
 
-        dst_curve->num_pivots = src_curve->num_pivots;
+        dst_curve->num_pivots = pivot_count;
         for (i = 0; i < pivot_count; i++) {
             dst_curve->pivots[i] = fs_normalize_u16(src_curve->pivots[i], signal_scale);
+        }
+
+        if (src_curve->num_pivots > pivot_count) {
+            ALOGW("DOVI reshape pivots clamped: component=%d src=%d dst=%d\n",
+                  c,
+                  src_curve->num_pivots,
+                  pivot_count);
         }
 
         for (i = 0; i < piece_count; i++) {
             if (src_curve->mapping_idc[i] == AV_DOVI_MAPPING_POLYNOMIAL) {
                 dst_curve->method[i] = FS_DV_RESHAPE_POLYNOMIAL;
-                dst_curve->poly_order[i] = src_curve->poly_order[i];
+                dst_curve->poly_order[i] = FFMIN(src_curve->poly_order[i], 2);
                 dst_curve->poly_coef[i][0] = (float) src_curve->poly_coef[i][0] / coef_scale;
                 dst_curve->poly_coef[i][1] = (float) src_curve->poly_coef[i][1] / coef_scale;
                 dst_curve->poly_coef[i][2] = (float) src_curve->poly_coef[i][2] / coef_scale;
             } else {
                 params->has_mmr = 1;
                 dst_curve->method[i] = FS_DV_RESHAPE_MMR;
-                dst_curve->mmr_order[i] = src_curve->mmr_order[i];
+                dst_curve->mmr_order[i] = FFMIN(src_curve->mmr_order[i], FS_HDR_MMR_MAX_ORDER);
                 dst_curve->mmr_constant[i] = (float) src_curve->mmr_constant[i] / coef_scale;
                 for (o = 0; o < FS_HDR_MMR_MAX_ORDER; o++) {
                     for (k = 0; k < FS_HDR_MMR_MAX_COEFFS; k++) {
@@ -1493,6 +1512,12 @@ static void fs_fill_hdr_frame_info(const AVFrame *frame, FSHDRFrameInfo *info)
 
     if (info->dolby_vision.valid) {
         info->content_type = FS_HDR_CONTENT_TYPE_DOLBY_VISION_LL;
+        if (info->dolby_vision.profile != 5) {
+            ALOGW("DOVI metadata parsed on %s path, profile=%d level=%d; renderer currently tuned for P5 first\n",
+                  fs_hdr_decode_path_name(info->decode_path),
+                  info->dolby_vision.profile,
+                  info->dolby_vision.level);
+        }
     } else if (frame->color_trc == AVCOL_TRC_SMPTE2084) {
         info->content_type = FS_HDR_CONTENT_TYPE_HDR10;
     } else if (frame->color_trc == AVCOL_TRC_ARIB_STD_B67) {

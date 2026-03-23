@@ -12,8 +12,80 @@
 #include "../ijksdl_log.h"
 #include <stdint.h>
 #include <string.h>
+#include <limits.h>
 
 static const NSUInteger kFSHDRUniformBufferSlots = 3;
+
+static const char *fs_hdr_content_type_name(int contentType)
+{
+    switch (contentType) {
+        case FS_HDR_CONTENT_TYPE_HDR10:
+            return "hdr10";
+        case FS_HDR_CONTENT_TYPE_HLG:
+            return "hlg";
+        case FS_HDR_CONTENT_TYPE_DOLBY_VISION_LL:
+            return "dolby-vision-ll";
+        default:
+            return "sdr";
+    }
+}
+
+static const char *fs_hdr_decode_path_name(int decodePath)
+{
+    switch (decodePath) {
+        case FS_HDR_DECODE_PATH_VIDEOTOOLBOX:
+            return "videotoolbox";
+        case FS_HDR_DECODE_PATH_FFMPEG_SOFTWARE:
+            return "ffmpeg-sw";
+        default:
+            return "unknown";
+    }
+}
+
+static const char *fs_hdr_colorspace_name(FSColorSpace colorSpace)
+{
+    switch (colorSpace) {
+        case FSColorSpaceBT2100_PQ:
+            return "bt2100-pq";
+        case FSColorSpaceSCRGB:
+            return "scrgb";
+        case FSColorSpaceUnknown:
+            return "unknown";
+        default:
+            return "bt709";
+    }
+}
+
+static const char *fs_hdr_matrix_name(FSYUV2RGBColorMatrixType matrixType)
+{
+    switch (matrixType) {
+        case FSYUV2RGBColorMatrixBT2020:
+            return "bt2020";
+        case FSYUV2RGBColorMatrixBT601:
+            return "bt601";
+        case FSYUV2RGBColorMatrixBT709:
+            return "bt709";
+        default:
+            return "none";
+    }
+}
+
+static uint32_t fs_hdr_log_signature(FSHDRFrameInfo frameInfo,
+                                     FSHDRRenderIntent renderIntent,
+                                     FSMetalPipelineMeta *pipelineMeta)
+{
+    uint32_t signature = 0;
+    signature |= (uint32_t)(frameInfo.content_type & 0x7);
+    signature |= (uint32_t)(frameInfo.decode_path & 0x3) << 3;
+    signature |= (uint32_t)(renderIntent.outputColorSpace & 0x7) << 5;
+    signature |= (uint32_t)(renderIntent.useDolbyVisionShader & 0x1) << 8;
+    signature |= (uint32_t)(renderIntent.needsToneMapping & 0x1) << 9;
+    signature |= (uint32_t)(renderIntent.needsGamutMapping & 0x1) << 10;
+    signature |= (uint32_t)(renderIntent.needsHDRDrawable & 0x1) << 11;
+    signature |= (uint32_t)(pipelineMeta.convertMatrixType & 0x7) << 12;
+    signature |= (uint32_t)(frameInfo.dolby_vision.profile & 0x1f) << 16;
+    return signature;
+}
 
 @interface FSMetalRenderer()
 {
@@ -22,6 +94,7 @@ static const NSUInteger kFSHDRUniformBufferSlots = 3;
     MTLPixelFormat _colorPixelFormat;
     FSHDRFrameInfo _hdrFrameInfo;
     FSHDRRenderIntent _renderIntent;
+    uint32_t _hdrLogSignature;
 }
 
 // The render pipeline generated from the vertex and fragment shaders in the .metal shader file.
@@ -55,6 +128,7 @@ static const NSUInteger kFSHDRUniformBufferSlots = 3;
         _colorAdjustment = (vector_float4){0.0};
         _hdrPercentage = 0.0;
         _renderIntent.outputColorSpace = FSColorSpaceBT709;
+        _hdrLogSignature = UINT_MAX;
     }
     return self;
 }
@@ -206,6 +280,23 @@ static const NSUInteger kFSHDRUniformBufferSlots = 3;
         _hdrFrameInfo = hdrFrameInfo;
         _renderIntent = renderIntent;
         self.hdrUniformChanged = YES;
+
+        if (self.pipelineMeta) {
+            uint32_t signature = fs_hdr_log_signature(_hdrFrameInfo, _renderIntent, self.pipelineMeta);
+            if (_hdrLogSignature != signature) {
+                _hdrLogSignature = signature;
+                ALOGI("hdr state: content=%s decode=%s dvProfile=%d shader=%d target=%s toneMap=%d gamut=%d hdrDrawable=%d matrix=%s\n",
+                      fs_hdr_content_type_name(_hdrFrameInfo.content_type),
+                      fs_hdr_decode_path_name(_hdrFrameInfo.decode_path),
+                      _hdrFrameInfo.dolby_vision.profile,
+                      _renderIntent.useDolbyVisionShader,
+                      fs_hdr_colorspace_name(_renderIntent.outputColorSpace),
+                      _renderIntent.needsToneMapping,
+                      _renderIntent.needsGamutMapping,
+                      _renderIntent.needsHDRDrawable,
+                      fs_hdr_matrix_name(self.pipelineMeta.convertMatrixType));
+            }
+        }
     }
 }
 
