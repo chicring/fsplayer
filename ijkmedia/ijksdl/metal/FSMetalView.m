@@ -45,6 +45,7 @@ typedef CGRect NSRect;
 @property (nonatomic, assign) FSHDRRenderIntent currentRenderIntent;
 @property (nonatomic, assign) FSColorSpace preferredColorSpace;
 @property (nonatomic, assign) NSUInteger displayIdentity;
+@property (nonatomic, assign) NSUInteger displayConfigSignature;
 
 #if TARGET_OS_IOS || TARGET_OS_TV
 @property (atomic, assign) BOOL isEnterBackground;
@@ -118,6 +119,7 @@ typedef CGRect NSRect;
     self.paused = YES;
     [self refreshRenderIntentForAttach:nil];
     self.displayIdentity = [self currentDisplayIdentity];
+    self.displayConfigSignature = [self currentDisplayConfigSignature];
     //set default bg color.
     [self setBackgroundColor:0 g:0 b:0];
     
@@ -235,6 +237,24 @@ typedef CGRect NSRect;
 
 - (void)refreshRenderIntentForAttach:(FSOverlayAttach *)attach
 {
+    [self refreshRenderIntentForAttach:attach displayCaps:[self currentDisplayCaps]];
+}
+
+- (NSUInteger)currentDisplayConfigSignature
+{
+    FSHDRDisplayCaps caps = [self currentDisplayCaps];
+    uint32_t headroomQ = (uint32_t)lrintf(fmaxf(caps.headroom, 1.0f) * 1000.0f);
+    NSUInteger signature = 0;
+    signature |= (NSUInteger)(caps.supportsExtendedRange & 0x1);
+    signature |= (NSUInteger)(caps.supportsPQOutput & 0x1) << 1;
+    signature |= (NSUInteger)(caps.supportsSCRGBOutput & 0x1) << 2;
+    signature |= (NSUInteger)headroomQ << 3;
+    return signature;
+}
+
+- (void)refreshRenderIntentForAttach:(FSOverlayAttach *)attach
+                         displayCaps:(FSHDRDisplayCaps)displayCaps
+{
     if (!self.renderPlanner) {
         self.currentRenderIntent = (FSHDRRenderIntent){0};
     } else if (!attach) {
@@ -244,7 +264,7 @@ typedef CGRect NSRect;
         self.currentRenderIntent = fallback;
     } else {
         self.currentRenderIntent = [self.renderPlanner planForFrameInfo:&attach.hdrFrameInfo
-                                                            displayCaps:[self currentDisplayCaps]];
+                                                            displayCaps:displayCaps];
     }
     [self applyRenderIntentConfiguration:self.currentRenderIntent];
 }
@@ -262,11 +282,15 @@ typedef CGRect NSRect;
 - (void)refreshDisplayConfigurationIfNeeded
 {
     NSUInteger displayIdentity = [self currentDisplayIdentity];
-    if (self.displayIdentity == displayIdentity) {
+    NSUInteger displayConfigSignature = [self currentDisplayConfigSignature];
+    if (self.displayIdentity == displayIdentity &&
+        self.displayConfigSignature == displayConfigSignature) {
         return;
     }
     self.displayIdentity = displayIdentity;
-    [self refreshRenderIntentForAttach:self.currentAttach];
+    self.displayConfigSignature = displayConfigSignature;
+    FSHDRDisplayCaps displayCaps = [self currentDisplayCaps];
+    [self refreshRenderIntentForAttach:self.currentAttach displayCaps:displayCaps];
     if (self.currentAttach) {
         [self invalidatePipelines];
         [self setNeedsRefreshCurrentPic];
@@ -731,6 +755,8 @@ typedef CGRect NSRect;
 
 - (void)applicationWillEnterForeground {
     self.isEnterBackground = NO;
+    [self refreshDisplayConfigurationIfNeeded];
+    [self setNeedsRefreshCurrentPic];
 }
 
 - (UIImage *)snapshot
