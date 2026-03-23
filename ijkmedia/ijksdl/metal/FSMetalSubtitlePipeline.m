@@ -30,6 +30,16 @@
 - (instancetype)initWithDevice:(id<MTLDevice>)device
                       inFormat:(FSMetalSubtitleInFormat)inFormat
                      outFormat:(FSMetalSubtitleOutFormat)outFormat
+{
+    return [self initWithDevice:device
+                       inFormat:inFormat
+                      outFormat:outFormat
+               colorPixelFormat:MTLPixelFormatBGRA8Unorm];
+}
+
+- (instancetype)initWithDevice:(id<MTLDevice>)device
+                      inFormat:(FSMetalSubtitleInFormat)inFormat
+                     outFormat:(FSMetalSubtitleOutFormat)outFormat
               colorPixelFormat:(MTLPixelFormat)colorPixelFormat
 {
     self = [super init];

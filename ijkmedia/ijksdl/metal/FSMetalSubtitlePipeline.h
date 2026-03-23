@@ -24,6 +24,10 @@ API_AVAILABLE(macos(10.13),ios(11.0),tvos(12.0))
 
 - (instancetype)initWithDevice:(id<MTLDevice>)device
                       inFormat:(FSMetalSubtitleInFormat)inFormat
+                     outFormat:(FSMetalSubtitleOutFormat)outFormat;
+
+- (instancetype)initWithDevice:(id<MTLDevice>)device
+                      inFormat:(FSMetalSubtitleInFormat)inFormat
                      outFormat:(FSMetalSubtitleOutFormat)outFormat
               colorPixelFormat:(MTLPixelFormat)colorPixelFormat;
 

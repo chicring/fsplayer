@@ -293,15 +293,17 @@ static void fs_log_hdr_attachment_reconcile_once(FSHDRFrameInfo info)
     MTLPixelFormat targetPixelFormat = intent.needsHDRDrawable ? MTLPixelFormatRGBA16Float : MTLPixelFormatBGRA8Unorm;
     BOOL pixelFormatChanged = self.colorPixelFormat != targetPixelFormat;
     CGColorSpaceRef targetColorSpace = [self copyColorSpaceForIntent:intent];
+    CAMetalLayer *metalLayer = (CAMetalLayer *)self.layer;
+    CGColorSpaceRef currentColorSpace = metalLayer.colorspace;
     BOOL colorSpaceChanged = NO;
 
     if (targetColorSpace) {
-        if (self.colorspace == NULL) {
+        if (currentColorSpace == NULL) {
             colorSpaceChanged = YES;
         } else {
-            colorSpaceChanged = !CFEqual(self.colorspace, targetColorSpace);
+            colorSpaceChanged = !CFEqual(currentColorSpace, targetColorSpace);
         }
-    } else if (self.colorspace != NULL) {
+    } else if (currentColorSpace != NULL) {
         colorSpaceChanged = YES;
     }
 
@@ -309,7 +311,7 @@ static void fs_log_hdr_attachment_reconcile_once(FSHDRFrameInfo info)
         self.colorPixelFormat = targetPixelFormat;
     }
     if (colorSpaceChanged) {
-        self.colorspace = targetColorSpace;
+        metalLayer.colorspace = targetColorSpace;
     }
     [self setExtendedDynamicRangeEnabled:intent.needsHDRDrawable];
 
@@ -350,7 +352,8 @@ static void fs_log_hdr_attachment_reconcile_once(FSHDRFrameInfo info)
         fallback.outputColorSpace = FSColorSpaceBT709;
         self.currentRenderIntent = fallback;
     } else {
-        self.currentRenderIntent = [self.renderPlanner planForFrameInfo:&attach.hdrFrameInfo
+        FSHDRFrameInfo frameInfo = attach.hdrFrameInfo;
+        self.currentRenderIntent = [self.renderPlanner planForFrameInfo:&frameInfo
                                                             displayCaps:displayCaps];
     }
     [self applyRenderIntentConfiguration:self.currentRenderIntent];

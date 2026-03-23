@@ -36,8 +36,17 @@ typedef NSView UIView;
 #else
 #import <UIKit/UIKit.h>
 #endif
+#if __has_include(<FSPlayer/FSColorSpace.h>)
+#import <FSPlayer/FSColorSpace.h>
+#else
 #include "FSColorSpace.h"
-#include "../../ijksdl/ijksdl_hdr_frame.h"
+#endif
+
+#if __has_include(<FSPlayer/ijksdl_hdr_frame.h>)
+#include <FSPlayer/ijksdl_hdr_frame.h>
+#else
+#include "ijksdl/ijksdl_hdr_frame.h"
+#endif
 
 NS_ASSUME_NONNULL_BEGIN
 
