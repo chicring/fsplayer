@@ -46,7 +46,7 @@
 - [x] 支持将画面同时渲染到多个 View 上
 - [x] 支持实时获取音频 PCM 数据
 - [x] 支持自定义渲染 View
-- [x] 支持 4K/HDR/HDR10/HDR10+/Dolby Vision，不支持 Dolby Vision P5
+- [x] 支持 4K/HDR/HDR10/HDR10+/Dolby Vision
 - [x] 智能识别 iso (blury、dvd、普通视频)
 - [x] mpegts 视频快进不花屏
 - [x] 支持网络协议播放 iso 镜像和 BDMV 文件夹
@@ -69,7 +69,6 @@
 - [ ] 音视频可变速变调
 - [ ] 支持透明视频
 - [ ] 画中画
-- [ ] Dolby Vision P5
 
 如果之前使用的 ijkplayer，可以轻松迁移到 fsplayer，请参考 [迁移指南](./doc/migration.md) 。
 

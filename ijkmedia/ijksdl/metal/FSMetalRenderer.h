@@ -25,11 +25,10 @@ NS_CLASS_AVAILABLE(10_13, 11_0)
 - (instancetype)initWithDevice:(id<MTLDevice>)device
               colorPixelFormat:(MTLPixelFormat)colorPixelFormat;
 
-- (BOOL)matchPixelBuffer:(CVPixelBufferRef)pixelBuffer doviInfo:(const FSDOVIFrameInfo *)doviInfo;
+- (BOOL)matchPixelBuffer:(CVPixelBufferRef)pixelBuffer;
 - (void)updateColorAdjustment:(vector_float4)c;
-- (void)updateDoviInfo:(const FSDOVIFrameInfo *)doviInfo;
 
-- (BOOL)createRenderPipelineIfNeed:(CVPixelBufferRef)pixelBuffer doviInfo:(const FSDOVIFrameInfo *)doviInfo blend:(BOOL)blend;
+- (BOOL)createRenderPipelineIfNeed:(CVPixelBufferRef)pixelBuffer blend:(BOOL)blend;
 - (void)uploadTextureWithEncoder:(id<MTLRenderCommandEncoder>)encoder
                         textures:(NSArray*)textures;
 @end

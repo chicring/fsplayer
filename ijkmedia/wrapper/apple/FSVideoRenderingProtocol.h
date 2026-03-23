@@ -61,7 +61,6 @@ typedef struct SDL_TextureOverlay SDL_TextureOverlay;
 //degrees
 @property(nonatomic) int autoZRotate;
 @property(nonatomic) int hasAlpha;
-@property(nonatomic, strong, nullable) NSData *doviInfoData;
 
 @property(nonatomic) CVPixelBufferRef _Nullable videoPicture;
 @property(nonatomic) NSArray * _Nullable videoTextures;

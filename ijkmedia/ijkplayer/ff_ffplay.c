@@ -64,7 +64,6 @@
 #include "ijksdl/ijksdl_log.h"
 #include "ijkavformat/ijkavformat.h"
 #include "libavutil/display.h"
-#include "libavutil/dovi_meta.h"
 #include "ff_fferror.h"
 #include "ff_ffpipeline.h"
 #include "ff_ffpipenode.h"
@@ -76,7 +75,6 @@
 #include "ff_packet_list.h"
 #include "ff_subtitle.h"
 #include "ijksdl/ijksdl_gpu.h"
-#include "ijksdl/ijksdl_dovi.h"
 #include <stdatomic.h>
 #if defined(__ANDROID__)
 #include "ijksoundtouch/ijksoundtouch_wrap.h"
@@ -1249,119 +1247,12 @@ static int get_z_rotate_degrees(AVStream *video_st)
     return get_degree_with_displaymatrix(displaymatrix);
 }
 
-static float fs_rational_to_float(AVRational q)
-{
-    if (q.den == 0) {
-        return 0.0f;
-    }
-    return (float) q.num / (float) q.den;
-}
-
-static void fs_reset_dovi_info(FSDOVIFrameInfo *info)
-{
-    if (!info) {
-        return;
-    }
-    memset(info, 0, sizeof(*info));
-}
-
-static void fs_fill_dovi_info(const AVFrame *frame, FSDOVIFrameInfo *out_info)
-{
-    static int s_dovi_no_metadata_logged = 0;
-    static int s_dovi_softdecode_enabled_logged = 0;
-    static int s_dovi_mmr_degraded_logged = 0;
-
-    fs_reset_dovi_info(out_info);
-    if (!frame || !out_info) {
-        return;
-    }
-
-    out_info->is_software_decode = frame->format != AV_PIX_FMT_VIDEOTOOLBOX;
-
-    AVFrameSideData *dovi_sd = av_frame_get_side_data((AVFrame *)frame, AV_FRAME_DATA_DOVI_METADATA);
-    if (!dovi_sd || !dovi_sd->data) {
-        if (out_info->is_software_decode && !s_dovi_no_metadata_logged) {
-            s_dovi_no_metadata_logged = 1;
-            ALOGW("DOVI: no AV_FRAME_DATA_DOVI_METADATA on software decode frame, reshape stays disabled.\n");
-        }
-        return;
-    }
-
-    const AVDOVIMetadata *dovi = (const AVDOVIMetadata *) dovi_sd->data;
-    AVDOVIRpuDataHeader *header = av_dovi_get_header(dovi);
-    AVDOVIDataMapping *mapping = av_dovi_get_mapping(dovi);
-    AVDOVIColorMetadata *color = av_dovi_get_color(dovi);
-    if (!header || !mapping || !color) {
-        return;
-    }
-
-    out_info->has_dovi = 1;
-    out_info->dovi_profile = header->vdr_rpu_profile;
-
-    if (!out_info->is_software_decode || out_info->dovi_profile != 5) {
-        return;
-    }
-
-    FSDOVIParams *params = &out_info->reshape_params;
-    params->enabled = 1;
-    params->has_mmr = 0;
-
-    const int bit_depth = header->bl_bit_depth > 0 ? header->bl_bit_depth : 10;
-    const float signal_scale = (float) ((1 << FFMIN(bit_depth, 16)) - 1);
-    const int coef_shift = FFMAX(header->coef_log2_denom, 0);
-    const float coef_scale = (float) (1 << FFMIN(coef_shift, 30));
-
-    for (int c = 0; c < FS_DOVI_COMPONENT_COUNT; c++) {
-        const AVDOVIReshapingCurve *src_curve = &mapping->curves[c];
-        FSDOVIReshapeComp *dst_curve = &params->comp[c];
-
-        dst_curve->num_pivots = FFMIN(src_curve->num_pivots, FS_DOVI_MAX_PIECES + 1);
-        int pivot_count = FFMIN(src_curve->num_pivots, FS_DOVI_MAX_PIECES + 1);
-        for (int i = 0; i < pivot_count; i++) {
-            dst_curve->pivots[i] = src_curve->pivots[i] / signal_scale;
-        }
-
-        int piece_count = FFMAX(FFMIN((int)src_curve->num_pivots - 1, FS_DOVI_MAX_PIECES), 0);
-        for (int i = 0; i < piece_count; i++) {
-            if (src_curve->mapping_idc[i] == AV_DOVI_MAPPING_POLYNOMIAL) {
-                dst_curve->method[i] = FS_DOVI_RESHAPE_POLYNOMIAL;
-                dst_curve->poly_coef[i][0] = (float)src_curve->poly_coef[i][0] / coef_scale;
-                dst_curve->poly_coef[i][1] = (float)src_curve->poly_coef[i][1] / coef_scale;
-                dst_curve->poly_coef[i][2] = (float)src_curve->poly_coef[i][2] / coef_scale;
-            } else {
-                params->has_mmr = 1;
-                dst_curve->method[i] = FS_DOVI_RESHAPE_MMR;
-            }
-        }
-    }
-
-    for (int i = 0; i < 9; i++) {
-        params->nonlinear_matrix[i] = fs_rational_to_float(color->ycc_to_rgb_matrix[i]);
-        params->linear_matrix[i] = fs_rational_to_float(color->rgb_to_lms_matrix[i]);
-    }
-    for (int i = 0; i < 3; i++) {
-        params->nonlinear_offset[i] = fs_rational_to_float(color->ycc_to_rgb_offset[i]);
-    }
-
-    if (params->has_mmr) {
-        params->enabled = 0;
-        if (!s_dovi_mmr_degraded_logged) {
-            s_dovi_mmr_degraded_logged = 1;
-            ALOGW("DOVI: profile 5 metadata contains MMR segments, current shader only handles polynomial; reshape degraded.\n");
-        }
-    } else if (!s_dovi_softdecode_enabled_logged) {
-        s_dovi_softdecode_enabled_logged = 1;
-        ALOGI("DOVI: profile 5 software decode reshape enabled (polynomial mode).\n");
-    }
-}
-
 static int queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double duration, int64_t pos, int serial)
 {
     VideoState *is = ffp->is;
     Frame *vp;
     int video_accurate_seek_fail = 0;
     int64_t now = 0;
-    FSDOVIFrameInfo dovi_info;
     
     monkey_log(NULL, AV_LOG_INFO,"xql video queue_picture\n");
     
@@ -1499,10 +1390,6 @@ static int queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double d
     
     if (!(vp = frame_queue_peek_writable(&is->pictq)))
         return -1;
-
-    // Capture DOVI metadata from the original decoder frame before optional
-    // pixel-format conversion, because converted frames may drop side data.
-    fs_fill_dovi_info(src_frame, &dovi_info);
 
     vp->sar = src_frame->sample_aspect_ratio;
     
@@ -1686,8 +1573,6 @@ static int queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double d
             vp->bmp->has_alpha = 0;
         }
 
-        vp->bmp->dovi_info = dovi_info;
-        
         if (ffp->autorotate) {
             //fill video ratate degrees
             AVFrameSideData *sd = av_frame_get_side_data(src_frame, AV_FRAME_DATA_DISPLAYMATRIX);

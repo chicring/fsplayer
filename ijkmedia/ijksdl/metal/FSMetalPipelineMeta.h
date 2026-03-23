@@ -18,10 +18,9 @@ NS_CLASS_AVAILABLE(10_13, 11_0)
 @property (nonatomic) NSString* fragmentName;
 @property (nonatomic) FSColorTransferFunc transferFunc;
 @property (nonatomic) FSYUV2RGBColorMatrixType convertMatrixType;
-@property (nonatomic) BOOL doviReshapeEnabled;
 
-+ (FSMetalPipelineMeta *)createWithCVPixelbuffer:(CVPixelBufferRef)pixelBuffer doviInfo:(const FSDOVIFrameInfo *)doviInfo;
-- (BOOL)metaMatchedCVPixelbuffer:(CVPixelBufferRef)pixelBuffer doviInfo:(const FSDOVIFrameInfo *)doviInfo;
++ (FSMetalPipelineMeta *)createWithCVPixelbuffer:(CVPixelBufferRef)pixelBuffer;
+- (BOOL)metaMatchedCVPixelbuffer:(CVPixelBufferRef)pixelBuffer;
 
 @end
 

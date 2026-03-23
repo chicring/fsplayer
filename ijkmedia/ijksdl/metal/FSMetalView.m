@@ -11,7 +11,6 @@
 #import <AVFoundation/AVUtilities.h>
 #import <CoreImage/CIContext.h>
 #import <mach/mach_time.h>
-#include <string.h>
 
 // Header shared between C code here, which executes Metal API commands, and .metal files, which
 // uses these types as inputs to the shaders.
@@ -48,20 +47,6 @@ typedef CGRect NSRect;
 @end
 
 @implementation FSMetalView
-
-static FSDOVIFrameInfo fs_read_dovi_info(FSOverlayAttach *attach)
-{
-    FSDOVIFrameInfo info;
-    memset(&info, 0, sizeof(info));
-    NSData *data = attach.doviInfoData;
-    if (data.length > 0 && data.length != sizeof(FSDOVIFrameInfo)) {
-        NSLog(@"DOVI: info size mismatch, got %lu expected %zu", (unsigned long)data.length, sizeof(FSDOVIFrameInfo));
-    }
-    if (data.length == sizeof(FSDOVIFrameInfo)) {
-        memcpy(&info, data.bytes, sizeof(FSDOVIFrameInfo));
-    }
-    return info;
-}
 
 @synthesize scalingMode = _scalingMode;
 // rotate preference
@@ -251,17 +236,15 @@ static FSDOVIFrameInfo fs_read_dovi_info(FSOverlayAttach *attach)
     if (!pixelBuffer) {
         return NO;
     }
-    FSDOVIFrameInfo doviInfo = fs_read_dovi_info(attach);
-    
     if (self.picturePipeline) {
-        if ([self.picturePipeline matchPixelBuffer:pixelBuffer doviInfo:&doviInfo]) {
+        if ([self.picturePipeline matchPixelBuffer:pixelBuffer]) {
             return YES;
         }
         ALOGI("pixel format not match,need rebuild pipeline");
     }
     
     FSMetalRenderer *picturePipeline = [[FSMetalRenderer alloc] initWithDevice:self.device colorPixelFormat:self.colorPixelFormat];
-    BOOL created = [picturePipeline createRenderPipelineIfNeed:pixelBuffer doviInfo:&doviInfo blend:blend];
+    BOOL created = [picturePipeline createRenderPipelineIfNeed:pixelBuffer blend:blend];
     
     if (!created) {
         ALOGI("create RenderPipeline failed.");
@@ -282,17 +265,10 @@ static FSDOVIFrameInfo fs_read_dovi_info(FSOverlayAttach *attach)
         hdrPercentage:(float)hdrPercentage
 {
     [self.pilelineLock lock];
-    FSDOVIFrameInfo doviInfo = fs_read_dovi_info(attach);
-    if (doviInfo.reshape_params.enabled && hdrPercentage < 1.0f) {
-        // DOVI softdecode reshaped signal is PQ/BT.2020 but may lack HDR tags on CVPixelBuffer.
-        // Force full-range tone mapping instead of relying on hdrPercentage guard.
-        hdrPercentage = 1.0f;
-    }
     self.picturePipeline.hdrPercentage = hdrPercentage;
     self.picturePipeline.autoZRotateDegrees = attach.autoZRotate;
     self.picturePipeline.rotateType = self.rotatePreference.type;
     self.picturePipeline.rotateDegrees = self.rotatePreference.degrees;
-    [self.picturePipeline updateDoviInfo:&doviInfo];
     
     bool applyAdjust = _colorPreference.brightness != 1.0 || _colorPreference.saturation != 1.0 || _colorPreference.contrast != 1.0;
     [self.picturePipeline updateColorAdjustment:(vector_float4){_colorPreference.brightness,_colorPreference.saturation,_colorPreference.contrast,applyAdjust ? 1.0 : 0.0}];
