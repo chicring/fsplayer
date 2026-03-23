@@ -37,8 +37,10 @@
 #include <unistd.h>
 
 #include "libavutil/avstring.h"
+#include "libavutil/dovi_meta.h"
 #include "libavutil/mathematics.h"
 #include "libavutil/mem.h"
+#include "libavutil/mastering_display_metadata.h"
 #include "libavutil/pixdesc.h"
 #include "libavutil/dict.h"
 #include "libavutil/samplefmt.h"
@@ -1247,12 +1249,266 @@ static int get_z_rotate_degrees(AVStream *video_st)
     return get_degree_with_displaymatrix(displaymatrix);
 }
 
+static float fs_avrational_to_float(AVRational q)
+{
+    if (q.den == 0) {
+        return 0.0f;
+    }
+    return (float) q.num / (float) q.den;
+}
+
+static float fs_normalize_u16(uint32_t value, float scale)
+{
+    if (scale <= 0.0f) {
+        return 0.0f;
+    }
+    return (float) value / scale;
+}
+
+static void fs_fill_mastering_display_metadata(const AVFrame *frame, FSHDRFrameInfo *info)
+{
+    AVFrameSideData *metadata_sd = av_frame_get_side_data((AVFrame *)frame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
+    if (!metadata_sd || !metadata_sd->data || !info) {
+        return;
+    }
+
+    const AVMasteringDisplayMetadata *metadata = (const AVMasteringDisplayMetadata *)metadata_sd->data;
+    if (metadata->has_luminance) {
+        info->mastering_min_nits = fs_avrational_to_float(metadata->min_luminance);
+        info->mastering_max_nits = fs_avrational_to_float(metadata->max_luminance);
+    }
+}
+
+static void fs_fill_content_light_metadata(const AVFrame *frame, FSHDRFrameInfo *info)
+{
+    AVFrameSideData *metadata_sd = av_frame_get_side_data((AVFrame *)frame, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);
+    if (!metadata_sd || !metadata_sd->data || !info) {
+        return;
+    }
+
+    const AVContentLightMetadata *metadata = (const AVContentLightMetadata *)metadata_sd->data;
+    info->max_cll = metadata->MaxCLL;
+    info->max_fall = metadata->MaxFALL;
+}
+
+static void fs_fill_dolby_vision_trim_metadata(const AVDOVIMetadata *dovi, FSDolbyVisionRenderParams *params)
+{
+    const float pq_code_scale = 4095.0f;
+    int i = 0;
+    if (!dovi || !params) {
+        return;
+    }
+
+    for (i = 0; i < dovi->num_ext_blocks; i++) {
+        const AVDOVIDmData *ext = av_dovi_get_ext(dovi, i);
+        int j = 0;
+        if (!ext) {
+            continue;
+        }
+
+        switch (ext->level) {
+            case 1:
+                params->trim.has_level1 = 1;
+                params->trim.min_pq = fs_normalize_u16(ext->l1.min_pq, pq_code_scale);
+                params->trim.max_pq = fs_normalize_u16(ext->l1.max_pq, pq_code_scale);
+                params->trim.avg_pq = fs_normalize_u16(ext->l1.avg_pq, pq_code_scale);
+                break;
+            case 2:
+                if (params->trim.has_level2) {
+                    break;
+                }
+                params->trim.has_level2 = 1;
+                params->trim.target_max_pq = ext->l2.target_max_pq;
+                params->trim.trim_slope = ext->l2.trim_slope;
+                params->trim.trim_offset = ext->l2.trim_offset;
+                params->trim.trim_power = ext->l2.trim_power;
+                params->trim.trim_chroma_weight = ext->l2.trim_chroma_weight;
+                params->trim.trim_saturation_gain = ext->l2.trim_saturation_gain;
+                params->trim.ms_weight = ext->l2.ms_weight;
+                break;
+            case 6:
+                params->trim.has_level6 = 1;
+                params->trim.max_luminance = ext->l6.max_luminance;
+                params->trim.min_luminance = ext->l6.min_luminance;
+                params->trim.max_cll = ext->l6.max_cll;
+                params->trim.max_fall = ext->l6.max_fall;
+                break;
+            case 8:
+                if (params->trim.has_level8) {
+                    break;
+                }
+                params->trim.has_level8 = 1;
+                params->trim.level8_target_display_index = ext->l8.target_display_index;
+                params->trim.level8_trim_slope = ext->l8.trim_slope;
+                params->trim.level8_trim_offset = ext->l8.trim_offset;
+                params->trim.level8_trim_power = ext->l8.trim_power;
+                params->trim.level8_trim_chroma_weight = ext->l8.trim_chroma_weight;
+                params->trim.level8_trim_saturation_gain = ext->l8.trim_saturation_gain;
+                params->trim.level8_ms_weight = ext->l8.ms_weight;
+                params->trim.target_mid_contrast = ext->l8.target_mid_contrast;
+                params->trim.clip_trim = ext->l8.clip_trim;
+                for (j = 0; j < FS_HDR_DV_VECTOR_FIELD_COUNT; j++) {
+                    params->trim.saturation_vector_field[j] = ext->l8.saturation_vector_field[j];
+                    params->trim.hue_vector_field[j] = ext->l8.hue_vector_field[j];
+                }
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+static void fs_fill_dolby_vision_metadata(const AVFrame *frame, FSHDRFrameInfo *info)
+{
+    AVFrameSideData *dovi_sd = av_frame_get_side_data((AVFrame *)frame, AV_FRAME_DATA_DOVI_METADATA);
+    const AVDOVIMetadata *dovi = NULL;
+    AVDOVIRpuDataHeader *header = NULL;
+    AVDOVIDataMapping *mapping = NULL;
+    AVDOVIColorMetadata *color = NULL;
+    FSDolbyVisionRenderParams *params = NULL;
+    const float pq_code_scale = 4095.0f;
+    int bit_depth = 10;
+    float signal_scale = 1023.0f;
+    int coef_shift = 0;
+    float coef_scale = 1.0f;
+    int c = 0;
+
+    if (!dovi_sd || !dovi_sd->data || !info) {
+        return;
+    }
+
+    dovi = (const AVDOVIMetadata *) dovi_sd->data;
+    header = av_dovi_get_header(dovi);
+    mapping = av_dovi_get_mapping(dovi);
+    color = av_dovi_get_color(dovi);
+    if (!header || !mapping || !color) {
+        return;
+    }
+
+    params = &info->dolby_vision;
+    params->valid = 1;
+    params->profile = header->vdr_rpu_profile;
+    params->level = header->vdr_rpu_level;
+    params->signal_bit_depth = color->signal_bit_depth;
+    params->bl_bit_depth = header->bl_bit_depth;
+    params->el_bit_depth = header->el_bit_depth;
+    params->vdr_bit_depth = header->vdr_bit_depth;
+    params->signal_full_range = color->signal_full_range_flag;
+    params->bl_signal_full_range = header->bl_video_full_range_flag;
+    params->mapping_color_space = mapping->mapping_color_space;
+    params->mapping_chroma_format_idc = mapping->mapping_chroma_format_idc;
+    params->signal_eotf = color->signal_eotf;
+    params->dm_metadata_id = color->dm_metadata_id;
+    params->scene_refresh_flag = color->scene_refresh_flag;
+    params->ext_mapping_idc_0_4 = header->ext_mapping_idc_0_4;
+    params->source_min_pq = fs_normalize_u16(color->source_min_pq, pq_code_scale);
+    params->source_max_pq = fs_normalize_u16(color->source_max_pq, pq_code_scale);
+    params->source_diagonal = color->source_diagonal;
+
+    bit_depth = header->bl_bit_depth > 0 ? header->bl_bit_depth : (color->signal_bit_depth > 0 ? color->signal_bit_depth : 10);
+    signal_scale = (float) ((1U << FFMIN(bit_depth, 16)) - 1U);
+    coef_shift = FFMAX(header->coef_log2_denom, 0);
+    coef_scale = (float) (1U << FFMIN(coef_shift, 30));
+
+    for (c = 0; c < FS_HDR_COMPONENT_COUNT; c++) {
+        const AVDOVIReshapingCurve *src_curve = &mapping->curves[c];
+        FSDolbyVisionReshapeComp *dst_curve = &params->comp[c];
+        int pivot_count = FFMIN(src_curve->num_pivots, FS_HDR_MAX_PIECES + 1);
+        int piece_count = FFMAX(FFMIN((int)src_curve->num_pivots - 1, FS_HDR_MAX_PIECES), 0);
+        int i = 0;
+        int o = 0;
+        int k = 0;
+
+        dst_curve->num_pivots = src_curve->num_pivots;
+        for (i = 0; i < pivot_count; i++) {
+            dst_curve->pivots[i] = fs_normalize_u16(src_curve->pivots[i], signal_scale);
+        }
+
+        for (i = 0; i < piece_count; i++) {
+            if (src_curve->mapping_idc[i] == AV_DOVI_MAPPING_POLYNOMIAL) {
+                dst_curve->method[i] = FS_DV_RESHAPE_POLYNOMIAL;
+                dst_curve->poly_order[i] = src_curve->poly_order[i];
+                dst_curve->poly_coef[i][0] = (float) src_curve->poly_coef[i][0] / coef_scale;
+                dst_curve->poly_coef[i][1] = (float) src_curve->poly_coef[i][1] / coef_scale;
+                dst_curve->poly_coef[i][2] = (float) src_curve->poly_coef[i][2] / coef_scale;
+            } else {
+                params->has_mmr = 1;
+                dst_curve->method[i] = FS_DV_RESHAPE_MMR;
+                dst_curve->mmr_order[i] = src_curve->mmr_order[i];
+                dst_curve->mmr_constant[i] = (float) src_curve->mmr_constant[i] / coef_scale;
+                for (o = 0; o < FS_HDR_MMR_MAX_ORDER; o++) {
+                    for (k = 0; k < FS_HDR_MMR_MAX_COEFFS; k++) {
+                        dst_curve->mmr_coef[i][o][k] = (float) src_curve->mmr_coef[i][o][k] / coef_scale;
+                    }
+                }
+            }
+        }
+    }
+
+    for (c = 0; c < 9; c++) {
+        params->nonlinear_matrix[c] = fs_avrational_to_float(color->ycc_to_rgb_matrix[c]);
+        params->linear_matrix[c] = fs_avrational_to_float(color->rgb_to_lms_matrix[c]);
+    }
+    for (c = 0; c < 3; c++) {
+        params->nonlinear_offset[c] = fs_avrational_to_float(color->ycc_to_rgb_offset[c]);
+    }
+
+    fs_fill_dolby_vision_trim_metadata(dovi, params);
+    if (params->trim.has_level6) {
+        if (info->mastering_max_nits <= 0.0f) {
+            info->mastering_max_nits = params->trim.max_luminance;
+        }
+        if (info->mastering_min_nits <= 0.0f) {
+            info->mastering_min_nits = params->trim.min_luminance;
+        }
+        if (info->max_cll <= 0.0f) {
+            info->max_cll = params->trim.max_cll;
+        }
+        if (info->max_fall <= 0.0f) {
+            info->max_fall = params->trim.max_fall;
+        }
+    }
+}
+
+static void fs_fill_hdr_frame_info(const AVFrame *frame, FSHDRFrameInfo *info)
+{
+    if (!info) {
+        return;
+    }
+    memset(info, 0, sizeof(*info));
+    if (!frame) {
+        return;
+    }
+
+    info->valid = 1;
+    info->decode_path = frame->format == AV_PIX_FMT_VIDEOTOOLBOX ? FS_HDR_DECODE_PATH_VIDEOTOOLBOX : FS_HDR_DECODE_PATH_FFMPEG_SOFTWARE;
+    info->primaries = frame->color_primaries;
+    info->transfer = frame->color_trc;
+    info->matrix = frame->colorspace;
+    info->full_range = frame->color_range == AVCOL_RANGE_JPEG;
+
+    fs_fill_mastering_display_metadata(frame, info);
+    fs_fill_content_light_metadata(frame, info);
+    fs_fill_dolby_vision_metadata(frame, info);
+
+    if (info->dolby_vision.valid) {
+        info->content_type = FS_HDR_CONTENT_TYPE_DOLBY_VISION_LL;
+    } else if (frame->color_trc == AVCOL_TRC_SMPTE2084) {
+        info->content_type = FS_HDR_CONTENT_TYPE_HDR10;
+    } else if (frame->color_trc == AVCOL_TRC_ARIB_STD_B67) {
+        info->content_type = FS_HDR_CONTENT_TYPE_HLG;
+    } else {
+        info->content_type = FS_HDR_CONTENT_TYPE_SDR;
+    }
+}
+
 static int queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double duration, int64_t pos, int serial)
 {
     VideoState *is = ffp->is;
     Frame *vp;
     int video_accurate_seek_fail = 0;
     int64_t now = 0;
+    FSHDRFrameInfo hdr_frame_info = {0};
     
     monkey_log(NULL, AV_LOG_INFO,"xql video queue_picture\n");
     
@@ -1390,6 +1646,8 @@ static int queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double d
     
     if (!(vp = frame_queue_peek_writable(&is->pictq)))
         return -1;
+
+    fs_fill_hdr_frame_info(src_frame, &hdr_frame_info);
 
     vp->sar = src_frame->sample_aspect_ratio;
     
@@ -1572,6 +1830,7 @@ static int queue_picture(FFPlayer *ffp, AVFrame *src_frame, double pts, double d
         } else {
             vp->bmp->has_alpha = 0;
         }
+        vp->bmp->hdr_frame_info = hdr_frame_info;
 
         if (ffp->autorotate) {
             //fill video ratate degrees

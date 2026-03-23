@@ -36,6 +36,7 @@ typedef NSView UIView;
 #else
 #import <UIKit/UIKit.h>
 #endif
+#include "../../ijksdl/ijksdl_hdr_frame.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -61,6 +62,7 @@ typedef struct SDL_TextureOverlay SDL_TextureOverlay;
 //degrees
 @property(nonatomic) int autoZRotate;
 @property(nonatomic) int hasAlpha;
+@property(nonatomic) FSHDRFrameInfo hdrFrameInfo;
 
 @property(nonatomic) CVPixelBufferRef _Nullable videoPicture;
 @property(nonatomic) NSArray * _Nullable videoTextures;

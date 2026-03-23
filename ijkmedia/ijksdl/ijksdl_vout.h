@@ -28,6 +28,7 @@
 
 #include "ijksdl_stdinc.h"
 #include "ijksdl_class.h"
+#include "ijksdl_hdr_frame.h"
 #include "ijksdl_mutex.h"
 #include "ijksdl_video.h"
 #include "ijksdl/ffmpeg/ijksdl_inc_ffmpeg.h"
@@ -52,6 +53,7 @@ struct SDL_VoutOverlay {
     //for auto rotate video
     int auto_z_rotate_degrees;
     int has_alpha;
+    FSHDRFrameInfo hdr_frame_info;
     SDL_Class               *opaque_class;
     SDL_VoutOverlay_Opaque  *opaque;
 
