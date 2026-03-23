@@ -63,9 +63,6 @@ typedef struct {
     matrix_float3x3 colorMatrix;
     vector_float3 offset;
     vector_float4 adjustment;
-    FSColorTransferFunc transferFun;
-    float hdrPercentage;
-    int hdr;
 } FSConvertMatrix;
 
 typedef struct {

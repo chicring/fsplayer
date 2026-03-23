@@ -129,7 +129,6 @@ static uint32_t fs_hdr_log_signature(FSHDRFrameInfo frameInfo,
         _device = device;
         _colorPixelFormat = colorPixelFormat;
         _colorAdjustment = (vector_float4){0.0};
-        _hdrPercentage = 0.0;
         _renderIntent.outputColorSpace = FSColorSpaceBT709;
         _hdrLogSignature = UINT_MAX;
     }
@@ -390,9 +389,6 @@ static uint32_t fs_hdr_log_signature(FSHDRFrameInfo frameInfo,
         
         FSConvertMatrix convertMatrix = ijk_metal_create_color_matrix(self.pipelineMeta.convertMatrixType, self.pipelineMeta.fullRange);
         convertMatrix.adjustment = _colorAdjustment;
-        convertMatrix.transferFun = self.pipelineMeta.transferFunc;
-        convertMatrix.hdrPercentage = self.hdrPercentage;
-        convertMatrix.hdr = self.pipelineMeta.hdr;
         self.convertMatrixBuff = [_device newBufferWithBytes:&convertMatrix
                                                       length:sizeof(FSConvertMatrix)
                                                      options:MTLResourceStorageModeShared];
@@ -440,14 +436,6 @@ static uint32_t fs_hdr_log_signature(FSHDRFrameInfo frameInfo,
         memcpy((uint8_t *)self.hdrUniformBuff.contents + self.hdrUniformOffset,
                &uniforms,
                sizeof(FSHDRFragmentUniforms));
-    }
-}
-
-- (void)setHdrPercentage:(float)hdrPercentage
-{
-    if (0.0 <= hdrPercentage && hdrPercentage <= 1.0 && _hdrPercentage != hdrPercentage) {
-        _hdrPercentage = hdrPercentage;
-        self.convertMatrixChanged = YES;
     }
 }
 

@@ -437,10 +437,8 @@ typedef CGRect NSRect;
         renderEncoder:(id<MTLRenderCommandEncoder>)renderEncoder
              viewport:(CGSize)viewport
                 ratio:(CGSize)ratio
-        hdrPercentage:(float)hdrPercentage
 {
     [self.pilelineLock lock];
-    self.picturePipeline.hdrPercentage = hdrPercentage;
     self.picturePipeline.autoZRotateDegrees = attach.autoZRotate;
     self.picturePipeline.rotateType = self.rotatePreference.type;
     self.picturePipeline.rotateDegrees = self.rotatePreference.degrees;
@@ -554,7 +552,6 @@ typedef CGRect NSRect;
     
     //[renderEncoder pushDebugGroup:@"encodePicture"];
     
-    float hdrPer = 1.0;
     if (self.showHdrAnimation && [self.picturePipeline isHDR]) {
 #define _C(c) (attach.fps > 0 ? (int)ceil(attach.fps * c / 24.0) : c)
         int delay = _C(100);
@@ -568,18 +565,14 @@ typedef CGRect NSRect;
                 } else if (frameCount == maxCount) {
                     [self sendHDRAnimationNotifiOnMainThread:2];
                 }
-                hdrPer = 0.5 + 0.5 * frameCount / maxCount;
             }
-        } else {
-            hdrPer = 0.5;
         }
     }
     
     [self encodePicture:attach
           renderEncoder:renderEncoder
                viewport:viewport
-                  ratio:ratio
-          hdrPercentage:hdrPer];
+                  ratio:ratio];
     
     if (attach.subTexture) {
         [self encodeSubtitle:renderEncoder
@@ -659,8 +652,7 @@ typedef CGRect NSRect;
         [self encodePicture:attach
               renderEncoder:renderEncoder
                    viewport:viewport
-                      ratio:CGSizeMake(1.0, 1.0)
-              hdrPercentage:1.0];
+                      ratio:CGSizeMake(1.0, 1.0)];
         
         if (drawSub && attach.subTexture) {
             [self encodeSubtitle:renderEncoder
@@ -721,8 +713,7 @@ typedef CGRect NSRect;
             [self encodePicture:attach
                   renderEncoder:renderEncoder
                        viewport:viewport
-                          ratio:ratio
-                  hdrPercentage:1.0];
+                          ratio:ratio];
         }
         
         if (attach.subTexture) {

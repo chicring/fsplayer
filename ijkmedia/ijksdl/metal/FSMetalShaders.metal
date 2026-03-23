@@ -407,33 +407,10 @@ float3 fs_decode_dolby_vision_linear_bt2020(float3 signal,
     return max(fs_hpe_lms_to_bt2020_linear(lms), 0.0f);
 }
 
-float3 fs_legacy_hdr2sdr(float3 rgb2020, float x, float hdrPercentage, FSColorTransferFunc transferFun)
-{
-    if (!(x > 0.0f && x <= hdrPercentage)) {
-        return rgb2020;
-    }
-
-    float3 linearColor;
-    if (transferFun == FSColorTransferFuncPQ) {
-        linearColor = (10000.0f / 100.0f) * fs_pq_eotf_vec(rgb2020);
-    } else if (transferFun == FSColorTransferFuncHLG) {
-        linearColor = (1000.0f / 100.0f) * arib_b67_eotf_vec(rgb2020);
-    } else {
-        linearColor = fs_bt1886_eotf_vec(rgb2020);
-    }
-
-    float peak = max(fs_max_component(linearColor), 1e-6f);
-    float mapped = fs_tonemap_hable_curve(peak) / fs_tonemap_hable_curve(20.0f);
-    linearColor *= mapped / peak;
-    linearColor = fs_bt2020_to_bt709_linear(linearColor);
-    return fs_bt1886_inverse_eotf_vec(max(linearColor, 0.0f));
-}
-
-float4 yuv2rgb(float3 yuv, device FSConvertMatrix *convertMatrix, float x)
+float4 yuv2rgb(float3 yuv, device FSConvertMatrix *convertMatrix)
 {
     float3 rgb = convertMatrix->colorMatrix * (yuv + convertMatrix->offset);
-    float3 outColor = convertMatrix->hdr ? fs_legacy_hdr2sdr(rgb, x, convertMatrix->hdrPercentage, convertMatrix->transferFun) : rgb;
-    return float4(rgb_adjust(outColor, convertMatrix->adjustment), 1.0f);
+    return float4(rgb_adjust(rgb, convertMatrix->adjustment), 1.0f);
 }
 
 float3 fs_linearize_hdr_rgb(float3 rgb, int transfer);
@@ -656,7 +633,7 @@ fragment float4 nv12FragmentShader(RasterizerData input [[stage_in]],
                                      input.textureCoordinate,
                                      float2(textureY.get_width(), textureY.get_height()));
     }
-    return yuv2rgb(yuv, fragmentShaderArgs.convertMatrix, input.textureCoordinate.x);
+    return yuv2rgb(yuv, fragmentShaderArgs.convertMatrix);
 }
 
 /// @brief yuv420p fragment shader
@@ -686,7 +663,7 @@ fragment float4 yuv420pFragmentShader(RasterizerData input [[stage_in]],
                                      input.textureCoordinate,
                                      float2(textureY.get_width(), textureY.get_height()));
     }
-    return yuv2rgb(yuv, fragmentShaderArgs.convertMatrix, input.textureCoordinate.x);
+    return yuv2rgb(yuv, fragmentShaderArgs.convertMatrix);
 }
 
 /// @brief uyvy422 fragment shader
@@ -712,7 +689,7 @@ fragment float4 uyvy422FragmentShader(RasterizerData input [[stage_in]],
                                      input.textureCoordinate,
                                      float2(textureY.get_width(), textureY.get_height()));
     }
-    return yuv2rgb(yuv, fragmentShaderArgs.convertMatrix, input.textureCoordinate.x);
+    return yuv2rgb(yuv, fragmentShaderArgs.convertMatrix);
 }
 
 /// @brief ayuv fragment shader
@@ -738,7 +715,7 @@ fragment float4 ayuvFragmentShader(RasterizerData input [[stage_in]],
                                      input.textureCoordinate,
                                      float2(textureY.get_width(), textureY.get_height()));
     }
-    return yuv2rgb(yuv, fragmentShaderArgs.convertMatrix, input.textureCoordinate.x);
+    return yuv2rgb(yuv, fragmentShaderArgs.convertMatrix);
 }
 
 /// @brief bgra fragment shader
