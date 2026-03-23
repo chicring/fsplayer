@@ -75,7 +75,6 @@ typedef struct {
     int useDolbyVisionShader;
     int needsToneMapping;
     int needsGamutMapping;
-    int allowsPassthrough;
     int needsHDRDrawable;
     int needsDithering;
     int toneMapMode;

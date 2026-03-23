@@ -416,7 +416,6 @@ static uint32_t fs_hdr_log_signature(FSHDRFrameInfo frameInfo,
         uniforms.useDolbyVisionShader = _renderIntent.useDolbyVisionShader;
         uniforms.needsToneMapping = _renderIntent.needsToneMapping;
         uniforms.needsGamutMapping = _renderIntent.needsGamutMapping;
-        uniforms.allowsPassthrough = _renderIntent.allowsPassthrough;
         uniforms.needsHDRDrawable = _renderIntent.needsHDRDrawable;
         uniforms.needsDithering = _renderIntent.needsDithering;
         uniforms.toneMapMode = _renderIntent.toneMapMode;

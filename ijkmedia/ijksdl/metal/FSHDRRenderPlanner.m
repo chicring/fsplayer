@@ -182,9 +182,6 @@ static float fs_hdr_pick_source_max_nits(const FSHDRFrameInfo *frameInfo)
                                   frameInfo->decode_path == FS_HDR_DECODE_PATH_FFMPEG_SOFTWARE &&
                                   frameInfo->dolby_vision.valid &&
                                   frameInfo->dolby_vision.profile == 5;
-    intent.allowsPassthrough = hdrInput &&
-                               targetColorSpace == FSColorSpaceBT2100_PQ &&
-                               displayCaps.supportsExtendedRange;
     intent.needsToneMapping = hdrInput &&
                               (targetColorSpace == FSColorSpaceBT709 ||
                                (targetColorSpace == FSColorSpaceSCRGB && sourceMaxNits > scRGBTargetMaxNits));
