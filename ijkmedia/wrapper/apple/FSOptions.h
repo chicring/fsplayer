@@ -23,14 +23,14 @@
  */
 
 #import <Foundation/Foundation.h>
-#if __has_include(<FSPlayer/FSColorSpace.h>)
-#import <FSPlayer/FSColorSpace.h>
-#elif __has_include(<FSColorSpace.h>)
-#import <FSColorSpace.h>
-#elif __has_include("FSColorSpace.h")
+#if __has_include("FSColorSpace.h")
 #import "FSColorSpace.h"
+#elif __has_include(<FSPlayer/FSColorSpace.h>)
+#import <FSPlayer/FSColorSpace.h>
 #elif __has_include("wrapper/apple/FSColorSpace.h")
 #import "wrapper/apple/FSColorSpace.h"
+#elif __has_include(<FSColorSpace.h>)
+#import <FSColorSpace.h>
 #else
 #error "FSColorSpace.h not found"
 #endif
