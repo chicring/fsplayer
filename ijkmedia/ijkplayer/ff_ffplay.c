@@ -1291,6 +1291,57 @@ static const char *fs_hdr_content_type_name(int content_type)
     }
 }
 
+static void fs_log_dovi_reshape_clamp_once(int component, int src_pivots, int dst_pivots)
+{
+    static int last_src_pivots[FS_HDR_COMPONENT_COUNT] = {0};
+    static int last_dst_pivots[FS_HDR_COMPONENT_COUNT] = {0};
+
+    if (component < 0 || component >= FS_HDR_COMPONENT_COUNT) {
+        return;
+    }
+    if (last_src_pivots[component] == src_pivots &&
+        last_dst_pivots[component] == dst_pivots) {
+        return;
+    }
+
+    last_src_pivots[component] = src_pivots;
+    last_dst_pivots[component] = dst_pivots;
+    ALOGW("DOVI reshape pivots clamped: component=%d src=%d dst=%d\n",
+          component,
+          src_pivots,
+          dst_pivots);
+}
+
+static void fs_log_dovi_path_warning_once(int reason,
+                                          int decode_path,
+                                          int profile,
+                                          int level)
+{
+    static uint32_t last_signature = UINT_MAX;
+    uint32_t signature = 0;
+
+    signature |= (uint32_t)(reason & 0x3);
+    signature |= (uint32_t)(decode_path & 0x3) << 2;
+    signature |= (uint32_t)(profile & 0x1f) << 4;
+    signature |= (uint32_t)(level & 0x3f) << 9;
+    if (last_signature == signature) {
+        return;
+    }
+    last_signature = signature;
+
+    if (reason == 1) {
+        ALOGW("DOVI profile=%d parsed on %s path; Dolby Vision shader is only enabled on ffmpeg-sw, using HDR fallback\n",
+              profile,
+              fs_hdr_decode_path_name(decode_path));
+        return;
+    }
+
+    ALOGW("DOVI metadata parsed on %s path, profile=%d level=%d; falling back to non-DV render path\n",
+          fs_hdr_decode_path_name(decode_path),
+          profile,
+          level);
+}
+
 static void fs_log_hdr_frame_info(const FSHDRFrameInfo *info)
 {
     static uint32_t last_signature = UINT_MAX;
@@ -1494,10 +1545,7 @@ static void fs_fill_dolby_vision_metadata(const AVFrame *frame, FSHDRFrameInfo *
         }
 
         if (src_curve->num_pivots > pivot_count) {
-            ALOGW("DOVI reshape pivots clamped: component=%d src=%d dst=%d\n",
-                  c,
-                  src_curve->num_pivots,
-                  pivot_count);
+            fs_log_dovi_reshape_clamp_once(c, src_curve->num_pivots, pivot_count);
         }
 
         for (i = 0; i < piece_count; i++) {
@@ -1568,14 +1616,17 @@ static void fs_fill_hdr_frame_info(const AVFrame *frame, FSHDRFrameInfo *info)
     fs_fill_dolby_vision_metadata(frame, info);
 
     if (info->dolby_vision.valid && info->dolby_vision.profile == 5) {
+        if (info->decode_path != FS_HDR_DECODE_PATH_FFMPEG_SOFTWARE) {
+            fs_log_dovi_path_warning_once(1,
+                                          info->decode_path,
+                                          info->dolby_vision.profile,
+                                          info->dolby_vision.level);
+        }
         info->content_type = FS_HDR_CONTENT_TYPE_DOLBY_VISION_LL;
     } else if (info->dolby_vision.valid) {
         int profile = info->dolby_vision.profile;
         int level = info->dolby_vision.level;
-        ALOGW("DOVI metadata parsed on %s path, profile=%d level=%d; falling back to non-DV render path\n",
-              fs_hdr_decode_path_name(info->decode_path),
-              profile,
-              level);
+        fs_log_dovi_path_warning_once(2, info->decode_path, profile, level);
         fs_clear_dolby_vision_metadata(info);
         if (frame->color_trc == AVCOL_TRC_SMPTE2084) {
             info->content_type = FS_HDR_CONTENT_TYPE_HDR10;
