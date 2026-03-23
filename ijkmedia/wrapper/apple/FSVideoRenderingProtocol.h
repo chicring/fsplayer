@@ -38,14 +38,24 @@ typedef NSView UIView;
 #endif
 #if __has_include(<FSPlayer/FSColorSpace.h>)
 #import <FSPlayer/FSColorSpace.h>
+#elif __has_include(<FSColorSpace.h>)
+#import <FSColorSpace.h>
+#elif __has_include("FSColorSpace.h")
+#import "FSColorSpace.h"
+#elif __has_include("wrapper/apple/FSColorSpace.h")
+#import "wrapper/apple/FSColorSpace.h"
 #else
-#include "FSColorSpace.h"
+#error "FSColorSpace.h not found"
 #endif
 
 #if __has_include(<FSPlayer/ijksdl_hdr_frame.h>)
 #include <FSPlayer/ijksdl_hdr_frame.h>
-#else
+#elif __has_include("../../ijksdl/ijksdl_hdr_frame.h")
+#include "../../ijksdl/ijksdl_hdr_frame.h"
+#elif __has_include("ijksdl/ijksdl_hdr_frame.h")
 #include "ijksdl/ijksdl_hdr_frame.h"
+#else
+#error "ijksdl_hdr_frame.h not found"
 #endif
 
 NS_ASSUME_NONNULL_BEGIN
