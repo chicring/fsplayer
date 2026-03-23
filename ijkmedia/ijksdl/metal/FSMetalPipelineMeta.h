@@ -16,7 +16,6 @@ NS_CLASS_AVAILABLE(10_13, 11_0)
 @property (nonatomic) BOOL hdr;
 @property (nonatomic) BOOL fullRange;
 @property (nonatomic) NSString* fragmentName;
-@property (nonatomic) FSColorTransferFunc transferFunc;
 @property (nonatomic) FSYUV2RGBColorMatrixType convertMatrixType;
 
 + (FSMetalPipelineMeta *)createWithCVPixelbuffer:(CVPixelBufferRef)pixelBuffer;

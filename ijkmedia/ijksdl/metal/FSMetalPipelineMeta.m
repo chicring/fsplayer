@@ -97,25 +97,10 @@
     meta.fragmentName = shaderName;
     meta.fullRange = fullRange;
     meta.convertMatrixType = colorMatrixType;
-    //HDR color space.
+    // Keep a coarse HDR flag for view-side affordances; transfer handling now
+    // lives in frame metadata + render intent instead of pipeline selection.
     if (colorMatrixType == FSYUV2RGBColorMatrixBT2020) {
         meta.hdr = YES;
-        
-        FSColorTransferFunc tf;
-        CFStringRef transferFuntion = CVBufferGetAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey, NULL);
-        if (transferFuntion) {
-            if (CFStringCompare(transferFuntion, FS_TransferFunction_ITU_R_2100_HLG, 0) == kCFCompareEqualTo) {
-                tf = FSColorTransferFuncHLG;
-            } else if (CFStringCompare(transferFuntion, FS_TransferFunction_SMPTE_ST_2084_PQ, 0) == kCFCompareEqualTo || CFStringCompare(transferFuntion, FS_TransferFunction_SMPTE_ST_428_1, 0) == kCFCompareEqualTo) {
-                tf = FSColorTransferFuncPQ;
-            } else {
-                tf = FSColorTransferFuncLINEAR;
-            }
-        } else {
-            tf = FSColorTransferFuncLINEAR;
-        }
-        
-        meta.transferFunc = tf;
     }
     return meta;
 }
@@ -124,8 +109,7 @@
 {
     NSString *matrix = [@[@"None",@"BT601",@"BT709",@"BT2020"] objectAtIndex:self.convertMatrixType];
     if (self.hdr) {
-        NSString *tf = [@[@"LINEAR",@"PQ",@"HLG"] objectAtIndex:self.transferFunc];
-        return [NSString stringWithFormat:@"%@,hdr:%d,fullRange:%d,matrix:%@,transfer:%@",self.fragmentName,self.hdr,self.fullRange,matrix,tf];
+        return [NSString stringWithFormat:@"%@,hdr:%d,fullRange:%d,matrix:%@",self.fragmentName,self.hdr,self.fullRange,matrix];
     } else {
         return [NSString stringWithFormat:@"%@,fullRange:%d,matrix:%@",self.fragmentName,self.fullRange,matrix];
     }
@@ -140,9 +124,6 @@
 {
     FSMetalPipelineMeta *meta = object;
     if (![object isKindOfClass:[FSMetalPipelineMeta class]]) {
-        return NO;
-    }
-    if (self.transferFunc != meta.transferFunc) {
         return NO;
     }
     if (self.fragmentName != meta.fragmentName) {
