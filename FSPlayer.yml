@@ -34,7 +34,7 @@ targets:
       MARKETING_VERSION: 1.0.4
       DEFINES_MODULE: YES
       MODULEMAP_FILE: "${MY_PROJECT_DIR}/module-macos.modulemap"
-      MY_PROJECT_DIR: "${MY_PROJECT_DIR}"
+      MY_PROJECT_DIR: "${PROJECT_DIR}"
       SWIFT_INCLUDE_PATHS:
         - "${MY_PROJECT_DIR}/ijkmedia/wrapper/apple"
       GENERATE_INFOPLIST_FILE: YES
@@ -149,6 +149,7 @@ targets:
       MARKETING_VERSION: 1.0.4
       DEFINES_MODULE: YES
       MODULEMAP_FILE: "${MY_PROJECT_DIR}/module-ios.modulemap"
+      MY_PROJECT_DIR: "${PROJECT_DIR}"
       SWIFT_INCLUDE_PATHS:
         - "${MY_PROJECT_DIR}/ijkmedia/wrapper/apple"
       GENERATE_INFOPLIST_FILE: YES
@@ -258,6 +259,7 @@ targets:
       MARKETING_VERSION: 1.0.4
       DEFINES_MODULE: YES
       MODULEMAP_FILE: "${MY_PROJECT_DIR}/module-tvos.modulemap"
+      MY_PROJECT_DIR: "${PROJECT_DIR}"
       SWIFT_INCLUDE_PATHS:
         - "${MY_PROJECT_DIR}/ijkmedia/wrapper/apple"
       GENERATE_INFOPLIST_FILE: YES
@@ -329,5 +331,4 @@ targets:
       - sdk: libbz2.tbd
       - sdk: libiconv.tbd
       - sdk: liblzma.tbd
-
 
