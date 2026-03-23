@@ -7,6 +7,7 @@
 //
 
 #import <simd/simd.h>
+#include "../ijksdl_hdr_frame.h"
 
 typedef enum FSYUV2RGBColorMatrixType
 {
@@ -22,6 +23,13 @@ typedef enum FSColorTransferFunc
     FSColorTransferFuncPQ,
     FSColorTransferFuncHLG,
 } FSColorTransferFunc;
+
+typedef enum FSHDRToneMapMode
+{
+    FSHDRToneMapModeBT2390,
+    FSHDRToneMapModeHable,
+    FSHDRToneMapModeACES,
+} FSHDRToneMapMode;
 
 // Buffer index values shared between shader and C code to ensure Metal shader buffer inputs
 // match Metal API buffer set calls.
@@ -56,12 +64,29 @@ typedef struct {
     int hdr;
 } FSConvertMatrix;
 
+typedef struct {
+    int valid;
+    int contentType;
+    int outputColorSpace;
+    int outputTransfer;
+    int needsToneMapping;
+    int needsGamutMapping;
+    int allowsPassthrough;
+    int toneMapMode;
+    float masteringMinNits;
+    float masteringMaxNits;
+    float maxCLL;
+    float maxFALL;
+    FSDolbyVisionRenderParams dolbyVision;
+} FSHDRFragmentUniforms;
+
 typedef enum FSFragmentBufferArguments
 {
     FSFragmentTextureIndexTextureY,
     FSFragmentTextureIndexTextureU,
     FSFragmentTextureIndexTextureV,
-    FSFragmentMatrixIndexConvert
+    FSFragmentMatrixIndexConvert,
+    FSFragmentMatrixIndexHDR
 } FSFragmentBufferArguments;
 
 typedef enum FSFragmentBufferLocation

@@ -17,6 +17,8 @@
     vector_float4 _colorAdjustment;
     id<MTLDevice> _device;
     MTLPixelFormat _colorPixelFormat;
+    FSHDRFrameInfo _hdrFrameInfo;
+    FSHDRRenderIntent _renderIntent;
 }
 
 // The render pipeline generated from the vertex and fragment shaders in the .metal shader file.
@@ -26,7 +28,9 @@
 @property (nonatomic, strong) id<MTLBuffer> fragmentShaderArgumentBuffer;
 @property (nonatomic, strong) id<MTLArgumentEncoder> argumentEncoder;
 @property (nonatomic, strong) id<MTLBuffer> convertMatrixBuff;
+@property (nonatomic, strong) id<MTLBuffer> hdrUniformBuff;
 @property (nonatomic, assign) BOOL convertMatrixChanged;
+@property (nonatomic, assign) BOOL hdrUniformChanged;
 
 @property (nonatomic, strong) FSMetalPipelineMeta *pipelineMeta;
 @property (nonatomic, assign) BOOL vertexChanged;
@@ -45,6 +49,7 @@
         _colorPixelFormat = colorPixelFormat;
         _colorAdjustment = (vector_float4){0.0};
         _hdrPercentage = 0.0;
+        _renderIntent.outputColorSpace = FSColorSpaceBT709;
     }
     return self;
 }
@@ -188,6 +193,17 @@
     }
 }
 
+- (void)updateHDRFrameInfo:(FSHDRFrameInfo)hdrFrameInfo
+              renderIntent:(FSHDRRenderIntent)renderIntent
+{
+    if (memcmp(&_hdrFrameInfo, &hdrFrameInfo, sizeof(FSHDRFrameInfo)) != 0 ||
+        memcmp(&_renderIntent, &renderIntent, sizeof(FSHDRRenderIntent)) != 0) {
+        _hdrFrameInfo = hdrFrameInfo;
+        _renderIntent = renderIntent;
+        self.hdrUniformChanged = YES;
+    }
+}
+
 - (void)updateVertexIfNeed
 {
     if (!self.vertexChanged) {
@@ -280,6 +296,32 @@
     }
 }
 
+- (void)updateHDRUniformBufferIfNeed
+{
+    if (self.hdrUniformChanged || !self.hdrUniformBuff) {
+        FSHDRFragmentUniforms uniforms = {0};
+        self.hdrUniformChanged = NO;
+
+        uniforms.valid = _hdrFrameInfo.valid;
+        uniforms.contentType = _hdrFrameInfo.content_type;
+        uniforms.outputColorSpace = _renderIntent.outputColorSpace;
+        uniforms.outputTransfer = _renderIntent.outputTransfer;
+        uniforms.needsToneMapping = _renderIntent.needsToneMapping;
+        uniforms.needsGamutMapping = _renderIntent.needsGamutMapping;
+        uniforms.allowsPassthrough = _renderIntent.allowsPassthrough;
+        uniforms.toneMapMode = FSHDRToneMapModeBT2390;
+        uniforms.masteringMinNits = _hdrFrameInfo.mastering_min_nits;
+        uniforms.masteringMaxNits = _hdrFrameInfo.mastering_max_nits;
+        uniforms.maxCLL = _hdrFrameInfo.max_cll;
+        uniforms.maxFALL = _hdrFrameInfo.max_fall;
+        uniforms.dolbyVision = _hdrFrameInfo.dolby_vision;
+
+        self.hdrUniformBuff = [_device newBufferWithBytes:&uniforms
+                                                   length:sizeof(FSHDRFragmentUniforms)
+                                                  options:MTLResourceStorageModeShared];
+    }
+}
+
 - (void)setHdrPercentage:(float)hdrPercentage
 {
     if (0.0 <= hdrPercentage && hdrPercentage <= 1.0 && _hdrPercentage != hdrPercentage) {
@@ -298,6 +340,7 @@
                      atIndex:FSVertexInputIndexVertices]; // 设置顶点缓存
  
     [self updateConvertMatrixBufferIfNeed];
+    [self updateHDRUniformBufferIfNeed];
     
     //Fragment Function(nv12FragmentShader): missing buffer binding at index 0 for fragmentShaderArgs[0].
     [self.argumentEncoder setArgumentBuffer:self.fragmentShaderArgumentBuffer offset:0];
@@ -317,13 +360,16 @@
         }
     }
     [self.argumentEncoder setBuffer:self.convertMatrixBuff offset:0 atIndex:FSFragmentMatrixIndexConvert];
+    [self.argumentEncoder setBuffer:self.hdrUniformBuff offset:0 atIndex:FSFragmentMatrixIndexHDR];
     
     // to map to the GPU's address space.
     if (@available(macOS 10.15, ios 13.0, tvOS 13.0, *)) {
         [encoder useResource:self.convertMatrixBuff usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+        [encoder useResource:self.hdrUniformBuff usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
     } else {
         // Fallback on earlier versions
         [encoder useResource:self.convertMatrixBuff usage:MTLResourceUsageRead];
+        [encoder useResource:self.hdrUniformBuff usage:MTLResourceUsageRead];
     }
     
     [encoder setFragmentBuffer:self.fragmentShaderArgumentBuffer

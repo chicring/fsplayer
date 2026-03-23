@@ -8,6 +8,7 @@
 
 @import MetalKit;
 #import "FSMetalShaderTypes.h"
+#import "FSHDRRenderPlanner.h"
 
 NS_ASSUME_NONNULL_BEGIN
 NS_CLASS_AVAILABLE(10_13, 11_0)
@@ -27,6 +28,8 @@ NS_CLASS_AVAILABLE(10_13, 11_0)
 
 - (BOOL)matchPixelBuffer:(CVPixelBufferRef)pixelBuffer;
 - (void)updateColorAdjustment:(vector_float4)c;
+- (void)updateHDRFrameInfo:(FSHDRFrameInfo)hdrFrameInfo
+              renderIntent:(FSHDRRenderIntent)renderIntent;
 
 - (BOOL)createRenderPipelineIfNeed:(CVPixelBufferRef)pixelBuffer blend:(BOOL)blend;
 - (void)uploadTextureWithEncoder:(id<MTLRenderCommandEncoder>)encoder

@@ -109,6 +109,7 @@ struct FSFragmentShaderArguments {
     texture2d<float> textureU [[ id(FSFragmentTextureIndexTextureU) ]];
     texture2d<float> textureV [[ id(FSFragmentTextureIndexTextureV) ]];
     device FSConvertMatrix * convertMatrix [[ id(FSFragmentMatrixIndexConvert) ]];
+    device FSHDRFragmentUniforms * hdrUniforms [[ id(FSFragmentMatrixIndexHDR) ]];
 };
 
 vertex RasterizerData subVertexShader(uint vertexID [[vertex_id]],

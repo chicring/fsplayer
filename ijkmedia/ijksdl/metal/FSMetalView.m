@@ -317,6 +317,8 @@ typedef CGRect NSRect;
     self.picturePipeline.autoZRotateDegrees = attach.autoZRotate;
     self.picturePipeline.rotateType = self.rotatePreference.type;
     self.picturePipeline.rotateDegrees = self.rotatePreference.degrees;
+    [self.picturePipeline updateHDRFrameInfo:attach.hdrFrameInfo
+                                renderIntent:self.currentRenderIntent];
     
     bool applyAdjust = _colorPreference.brightness != 1.0 || _colorPreference.saturation != 1.0 || _colorPreference.contrast != 1.0;
     [self.picturePipeline updateColorAdjustment:(vector_float4){_colorPreference.brightness,_colorPreference.saturation,_colorPreference.contrast,applyAdjust ? 1.0 : 0.0}];
