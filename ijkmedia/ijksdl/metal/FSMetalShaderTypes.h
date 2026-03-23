@@ -28,13 +28,6 @@ typedef enum FSColorTransferFunc
     FSColorTransferFuncHLG,
 } FSColorTransferFunc;
 
-typedef enum FSHDRToneMapMode
-{
-    FSHDRToneMapModeBT2390,
-    FSHDRToneMapModeHable,
-    FSHDRToneMapModeACES,
-} FSHDRToneMapMode;
-
 // Buffer index values shared between shader and C code to ensure Metal shader buffer inputs
 // match Metal API buffer set calls.
 typedef enum FSVertexInputIndex

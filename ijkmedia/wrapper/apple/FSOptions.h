@@ -74,6 +74,9 @@ NS_ASSUME_NONNULL_BEGIN
 // mdk-compatible public output target. Default stays BT709 so normal playback
 // does not implicitly switch to HDR output.
 @property(nonatomic) FSColorSpace colorSpace;
+// Default tone-map stays BT.2390. Hable/ACES are opt-in and only affect the
+// Metal HDR path when tone mapping is actually required.
+@property(nonatomic) FSHDRToneMapMode hdrToneMapMode;
 
 @end
 NS_ASSUME_NONNULL_END

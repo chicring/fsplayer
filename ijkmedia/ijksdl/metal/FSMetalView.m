@@ -46,6 +46,7 @@ typedef CGRect NSRect;
 @property (nonatomic, strong) FSHDRRenderPlanner *renderPlanner;
 @property (nonatomic, assign) FSHDRRenderIntent currentRenderIntent;
 @property (nonatomic, assign) FSColorSpace preferredColorSpace;
+@property (nonatomic, assign) FSHDRToneMapMode preferredHDRToneMapMode;
 @property (nonatomic, assign) NSUInteger displayIdentity;
 @property (nonatomic, assign) NSUInteger displayConfigSignature;
 
@@ -172,7 +173,9 @@ static void fs_log_hdr_attachment_reconcile_once(FSHDRFrameInfo info)
     _darPreference      = (FSDARPreference){0.0};
     _pilelineLock = [[NSLock alloc]init];
     _preferredColorSpace = FSColorSpaceBT709;
+    _preferredHDRToneMapMode = FSHDRToneMapModeBT2390;
     _renderPlanner = [[FSHDRRenderPlanner alloc] initWithPreferredColorSpace:_preferredColorSpace];
+    _renderPlanner.preferredToneMapMode = _preferredHDRToneMapMode;
     
     self.device = MTLCreateSystemDefaultDevice();
     if (!self.device) {
@@ -1002,6 +1005,17 @@ mp_format * mp_get_metal_format(uint32_t cvpixfmt);
     }
     _preferredColorSpace = preferredColorSpace;
     self.renderPlanner.preferredColorSpace = preferredColorSpace;
+    [self refreshRenderIntentForAttach:self.currentAttach];
+    [self setNeedsRefreshCurrentPic];
+}
+
+- (void)setPreferredHDRToneMapMode:(FSHDRToneMapMode)preferredHDRToneMapMode
+{
+    if (_preferredHDRToneMapMode == preferredHDRToneMapMode) {
+        return;
+    }
+    _preferredHDRToneMapMode = preferredHDRToneMapMode;
+    self.renderPlanner.preferredToneMapMode = preferredHDRToneMapMode;
     [self refreshRenderIntentForAttach:self.currentAttach];
     [self setNeedsRefreshCurrentPic];
 }

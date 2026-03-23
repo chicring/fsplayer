@@ -43,6 +43,7 @@ NS_CLASS_AVAILABLE(10_13, 11_0)
 @interface FSHDRRenderPlanner : NSObject
 
 @property(nonatomic) FSColorSpace preferredColorSpace;
+@property(nonatomic) FSHDRToneMapMode preferredToneMapMode;
 
 - (instancetype)initWithPreferredColorSpace:(FSColorSpace)preferredColorSpace;
 - (FSHDRRenderIntent)planForFrameInfo:(const FSHDRFrameInfo *)frameInfo

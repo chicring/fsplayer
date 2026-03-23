@@ -467,6 +467,7 @@ static void FSPlayerSafeDestroy(FSPlayer *player) {
         [options setPlayerOptionIntValue:0 forKey:@"subtitle_mix"];
     }
     [self setColorSpace:options.colorSpace];
+    [self setHDRToneMapMode:options.hdrToneMapMode];
     
     ijkmp_ios_set_automatically_setup_audio_session(_mediaPlayer, options.automaticallySetupAudioSession);
     
@@ -629,6 +630,14 @@ static void FSPlayerSafeDestroy(FSPlayer *player) {
     _colorSpace = type;
     if ([_videoRendering respondsToSelector:@selector(setPreferredColorSpace:)]) {
         [_videoRendering setPreferredColorSpace:type];
+    }
+}
+
+- (void)setHDRToneMapMode:(FSHDRToneMapMode)mode
+{
+    _hdrToneMapMode = mode;
+    if ([_videoRendering respondsToSelector:@selector(setPreferredHDRToneMapMode:)]) {
+        [_videoRendering setPreferredHDRToneMapMode:mode];
     }
 }
 

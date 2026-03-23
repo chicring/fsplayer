@@ -52,6 +52,7 @@
     options.metalRenderer = YES;
     options.automaticallySetupAudioSession = YES;
     options.colorSpace = FSColorSpaceBT709;
+    options.hdrToneMapMode = FSHDRToneMapModeBT2390;
     if (@available(macOS 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *)) {
         options.currentPlaybackTimeNotificationInterval = 0;
     } else {

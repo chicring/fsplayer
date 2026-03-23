@@ -184,6 +184,7 @@ typedef NS_ERROR_ENUM(FSTransmuxerErrorDomain, FSTransmuxerErrorCode) {
 @property(nonatomic, readonly) CGFloat fpsAtOutput;
 @property(nonatomic) BOOL shouldShowHudView API_AVAILABLE(macosx(10.12), ios(10.0), watchos(3.0), tvos(10.0));
 @property(nonatomic) FSColorSpace colorSpace;
+@property(nonatomic) FSHDRToneMapMode hdrToneMapMode;
 //when sampleSize is -1,the samples is NULL,means needs reset and refresh ui.
 @property(nonatomic, copy) void (^audioSamplesCallback)(int16_t * _Nullable samples, int sampleSize, int sampleRate, int channels);
 
@@ -207,6 +208,7 @@ typedef NS_ERROR_ENUM(FSTransmuxerErrorDomain, FSTransmuxerErrorCode) {
 - (void)setSwsOptionIntValue:       (int64_t)value forKey:(NSString *)key;
 - (void)setPlayerOptionIntValue:    (int64_t)value forKey:(NSString *)key;
 - (void)setColorSpace:(FSColorSpace)type;
+- (void)setHDRToneMapMode:(FSHDRToneMapMode)mode;
 
 @property (nonatomic, retain, nullable) id<FSMediaUrlOpenDelegate> segmentOpenDelegate;
 @property (nonatomic, retain, nullable) id<FSMediaUrlOpenDelegate> tcpOpenDelegate;

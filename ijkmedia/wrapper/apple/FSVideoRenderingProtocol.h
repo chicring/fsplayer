@@ -177,6 +177,8 @@ typedef enum : NSUInteger {
 // path until the Metal HDR planner is fully wired.
 - (void)setPreferredColorSpace:(FSColorSpace)colorSpace;
 - (FSColorSpace)preferredColorSpace;
+- (void)setPreferredHDRToneMapMode:(FSHDRToneMapMode)toneMapMode;
+- (FSHDRToneMapMode)preferredHDRToneMapMode;
 
 @end
 

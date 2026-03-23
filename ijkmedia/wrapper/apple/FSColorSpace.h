@@ -18,6 +18,11 @@ typedef NS_ENUM(NSInteger, FSColorSpace) {
     FSColorSpaceBT2100_PQ = 2,
     FSColorSpaceSCRGB = 3,
 };
+typedef NS_ENUM(NSInteger, FSHDRToneMapMode) {
+    FSHDRToneMapModeBT2390 = 0,
+    FSHDRToneMapModeHable = 1,
+    FSHDRToneMapModeACES = 2,
+};
 #else
 typedef enum FSColorSpace {
     FSColorSpaceUnknown = 0,
@@ -25,6 +30,11 @@ typedef enum FSColorSpace {
     FSColorSpaceBT2100_PQ = 2,
     FSColorSpaceSCRGB = 3,
 } FSColorSpace;
+typedef enum FSHDRToneMapMode {
+    FSHDRToneMapModeBT2390 = 0,
+    FSHDRToneMapModeHable = 1,
+    FSHDRToneMapModeACES = 2,
+} FSHDRToneMapMode;
 #endif
 
 #endif

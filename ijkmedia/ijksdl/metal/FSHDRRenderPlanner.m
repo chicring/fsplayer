@@ -131,6 +131,7 @@ static float fs_hdr_pick_source_max_nits(const FSHDRFrameInfo *frameInfo)
     self = [super init];
     if (self) {
         _preferredColorSpace = preferredColorSpace;
+        _preferredToneMapMode = FSHDRToneMapModeBT2390;
     }
     return self;
 }
@@ -185,7 +186,7 @@ static float fs_hdr_pick_source_max_nits(const FSHDRFrameInfo *frameInfo)
     intent.needsGamutMapping = bt2020Input && targetColorSpace == FSColorSpaceBT709;
     intent.needsHDRDrawable = targetColorSpace != FSColorSpaceBT709 && displayCaps.supportsExtendedRange;
     intent.needsDithering = targetColorSpace == FSColorSpaceBT709;
-    intent.toneMapMode = FSHDRToneMapModeBT2390;
+    intent.toneMapMode = self.preferredToneMapMode;
     intent.sourceMinNits = fs_hdr_pick_source_min_nits(frameInfo);
     intent.sourceMaxNits = sourceMaxNits;
     intent.sourceAverageNits = fs_hdr_pick_source_average_nits(frameInfo);
