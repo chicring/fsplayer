@@ -1385,6 +1385,17 @@ static void fs_clear_dolby_vision_metadata(FSHDRFrameInfo *info)
     memset(&info->dolby_vision, 0, sizeof(info->dolby_vision));
 }
 
+static int fs_hdr_content_type_from_transfer(int transfer)
+{
+    if (transfer == AVCOL_TRC_SMPTE2084) {
+        return FS_HDR_CONTENT_TYPE_HDR10;
+    }
+    if (transfer == AVCOL_TRC_ARIB_STD_B67) {
+        return FS_HDR_CONTENT_TYPE_HLG;
+    }
+    return FS_HDR_CONTENT_TYPE_SDR;
+}
+
 static void fs_fill_mastering_display_metadata(const AVFrame *frame, FSHDRFrameInfo *info)
 {
     AVFrameSideData *metadata_sd = av_frame_get_side_data((AVFrame *)frame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
@@ -1621,20 +1632,17 @@ static void fs_fill_hdr_frame_info(const AVFrame *frame, FSHDRFrameInfo *info)
                                           info->decode_path,
                                           info->dolby_vision.profile,
                                           info->dolby_vision.level);
+            fs_clear_dolby_vision_metadata(info);
+            info->content_type = fs_hdr_content_type_from_transfer(frame->color_trc);
+        } else {
+            info->content_type = FS_HDR_CONTENT_TYPE_DOLBY_VISION_LL;
         }
-        info->content_type = FS_HDR_CONTENT_TYPE_DOLBY_VISION_LL;
     } else if (info->dolby_vision.valid) {
         int profile = info->dolby_vision.profile;
         int level = info->dolby_vision.level;
         fs_log_dovi_path_warning_once(2, info->decode_path, profile, level);
         fs_clear_dolby_vision_metadata(info);
-        if (frame->color_trc == AVCOL_TRC_SMPTE2084) {
-            info->content_type = FS_HDR_CONTENT_TYPE_HDR10;
-        } else if (frame->color_trc == AVCOL_TRC_ARIB_STD_B67) {
-            info->content_type = FS_HDR_CONTENT_TYPE_HLG;
-        } else {
-            info->content_type = FS_HDR_CONTENT_TYPE_SDR;
-        }
+        info->content_type = fs_hdr_content_type_from_transfer(frame->color_trc);
     } else if (frame->color_trc == AVCOL_TRC_SMPTE2084) {
         info->content_type = FS_HDR_CONTENT_TYPE_HDR10;
     } else if (frame->color_trc == AVCOL_TRC_ARIB_STD_B67) {
