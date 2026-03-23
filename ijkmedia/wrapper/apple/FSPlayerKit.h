@@ -30,6 +30,20 @@
 #import <AppKit/AppKit.h>
 #endif
 
+#if __has_include("FSMediaPlayback.h")
+#import "FSMediaPlayback.h"
+#import "FSMonitor.h"
+#import "FSColorSpace.h"
+#import "FSOptions.h"
+#import "FSPlayer.h"
+#import "FSMediaModule.h"
+#import "FSNotificationManager.h"
+#import "FSKVOController.h"
+#import "FSVideoRenderingProtocol.h"
+#import "FSVideoRenderView.h"
+#import "FSAudioRenderingProtocol.h"
+#import "FSAudioRendering.h"
+#else
 #import <FSPlayer/FSMediaPlayback.h>
 #import <FSPlayer/FSMonitor.h>
 #import <FSPlayer/FSColorSpace.h>
@@ -42,4 +56,5 @@
 #import <FSPlayer/FSVideoRenderView.h>
 #import <FSPlayer/FSAudioRenderingProtocol.h>
 #import <FSPlayer/FSAudioRendering.h>
+#endif
 #endif /* FSPlayerKit_h */
