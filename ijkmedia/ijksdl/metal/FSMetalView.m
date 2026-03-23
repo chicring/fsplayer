@@ -23,6 +23,8 @@
 
 #import "ijksdl_vout_ios_gles2.h"
 #import "FSMediaPlayback.h"
+#import "ijk_vout_common.h"
+#include "../ffmpeg/ijksdl_inc_ffmpeg.h"
 
 #if TARGET_OS_IPHONE
 typedef CGRect NSRect;
@@ -54,6 +56,88 @@ typedef CGRect NSRect;
 @end
 
 @implementation FSMetalView
+
+static int fs_hdr_content_type_from_cv_transfer(CFStringRef transferFunction)
+{
+    if (!transferFunction) {
+        return FS_HDR_CONTENT_TYPE_SDR;
+    }
+    if (CFStringCompare(transferFunction, FS_TransferFunction_ITU_R_2100_HLG, 0) == kCFCompareEqualTo) {
+        return FS_HDR_CONTENT_TYPE_HLG;
+    }
+    if (CFStringCompare(transferFunction, FS_TransferFunction_SMPTE_ST_2084_PQ, 0) == kCFCompareEqualTo ||
+        CFStringCompare(transferFunction, FS_TransferFunction_SMPTE_ST_428_1, 0) == kCFCompareEqualTo) {
+        return FS_HDR_CONTENT_TYPE_HDR10;
+    }
+    return FS_HDR_CONTENT_TYPE_SDR;
+}
+
+static int fs_hdr_avcol_transfer_from_cv_transfer(CFStringRef transferFunction)
+{
+    if (!transferFunction) {
+        return AVCOL_TRC_UNSPECIFIED;
+    }
+    if (CFStringCompare(transferFunction, FS_TransferFunction_ITU_R_2100_HLG, 0) == kCFCompareEqualTo) {
+        return AVCOL_TRC_ARIB_STD_B67;
+    }
+    if (CFStringCompare(transferFunction, FS_TransferFunction_SMPTE_ST_2084_PQ, 0) == kCFCompareEqualTo ||
+        CFStringCompare(transferFunction, FS_TransferFunction_SMPTE_ST_428_1, 0) == kCFCompareEqualTo) {
+        return AVCOL_TRC_SMPTE2084;
+    }
+    return AVCOL_TRC_UNSPECIFIED;
+}
+
+static int fs_hdr_avcol_matrix_from_cv_matrix(CFStringRef colorMatrix)
+{
+    if (!colorMatrix) {
+        return AVCOL_SPC_UNSPECIFIED;
+    }
+    if (CFStringCompare(colorMatrix, kCVImageBufferYCbCrMatrix_ITU_R_2020, 0) == kCFCompareEqualTo) {
+        return AVCOL_SPC_BT2020_NCL;
+    }
+    if (CFStringCompare(colorMatrix, kCVImageBufferYCbCrMatrix_ITU_R_709_2, 0) == kCFCompareEqualTo) {
+        return AVCOL_SPC_BT709;
+    }
+    if (CFStringCompare(colorMatrix, kCVImageBufferYCbCrMatrix_ITU_R_601_4, 0) == kCFCompareEqualTo) {
+        return AVCOL_SPC_BT470BG;
+    }
+    return AVCOL_SPC_UNSPECIFIED;
+}
+
+static int fs_hdr_avcol_primaries_from_cv_primaries(CFStringRef primaries)
+{
+    if (!primaries) {
+        return AVCOL_PRI_UNSPECIFIED;
+    }
+    if (CFStringCompare(primaries, kCVImageBufferColorPrimaries_ITU_R_2020, 0) == kCFCompareEqualTo) {
+        return AVCOL_PRI_BT2020;
+    }
+    if (CFStringCompare(primaries, kCVImageBufferColorPrimaries_ITU_R_709_2, 0) == kCFCompareEqualTo) {
+        return AVCOL_PRI_BT709;
+    }
+    return AVCOL_PRI_UNSPECIFIED;
+}
+
+static void fs_log_hdr_attachment_promotion_once(FSHDRFrameInfo info)
+{
+    static uint32_t lastSignature = UINT_MAX;
+    uint32_t signature = 0;
+
+    signature |= (uint32_t)(info.content_type & 0x7);
+    signature |= (uint32_t)(info.transfer & 0xff) << 3;
+    signature |= (uint32_t)(info.primaries & 0xff) << 11;
+    signature |= (uint32_t)(info.matrix & 0xff) << 19;
+    if (lastSignature == signature) {
+        return;
+    }
+    lastSignature = signature;
+
+    ALOGI("hdr frame promoted from pixel buffer attachments: content=%d trc=%d primaries=%d matrix=%d\n",
+          info.content_type,
+          info.transfer,
+          info.primaries,
+          info.matrix);
+}
 
 @synthesize scalingMode = _scalingMode;
 // rotate preference
@@ -295,6 +379,49 @@ typedef CGRect NSRect;
         [self invalidatePipelines];
         [self setNeedsRefreshCurrentPic];
     }
+}
+
+- (void)promoteHDRFrameInfoFromPixelBufferIfNeeded:(FSOverlayAttach *)attach
+{
+    if (!attach || !attach.videoPicture) {
+        return;
+    }
+
+    FSHDRFrameInfo info = attach.hdrFrameInfo;
+    if (!info.valid || info.content_type != FS_HDR_CONTENT_TYPE_SDR) {
+        return;
+    }
+
+    CFStringRef transferFunction = CVBufferGetAttachment(attach.videoPicture, kCVImageBufferTransferFunctionKey, NULL);
+    int promotedContentType = fs_hdr_content_type_from_cv_transfer(transferFunction);
+    if (promotedContentType == FS_HDR_CONTENT_TYPE_SDR) {
+        return;
+    }
+
+    CFStringRef colorMatrix = CVBufferGetAttachment(attach.videoPicture, kCVImageBufferYCbCrMatrixKey, NULL);
+    CFStringRef colorPrimaries = CVBufferGetAttachment(attach.videoPicture, kCVImageBufferColorPrimariesKey, NULL);
+    int attachmentMatrix = fs_hdr_avcol_matrix_from_cv_matrix(colorMatrix);
+    int attachmentPrimaries = fs_hdr_avcol_primaries_from_cv_primaries(colorPrimaries);
+    BOOL isBT2020 = info.primaries == AVCOL_PRI_BT2020 ||
+                    info.matrix == AVCOL_SPC_BT2020_NCL ||
+                    info.matrix == AVCOL_SPC_BT2020_CL ||
+                    attachmentPrimaries == AVCOL_PRI_BT2020 ||
+                    attachmentMatrix == AVCOL_SPC_BT2020_NCL ||
+                    attachmentMatrix == AVCOL_SPC_BT2020_CL;
+    if (!isBT2020) {
+        return;
+    }
+
+    info.content_type = promotedContentType;
+    info.transfer = fs_hdr_avcol_transfer_from_cv_transfer(transferFunction);
+    if (attachmentPrimaries != AVCOL_PRI_UNSPECIFIED) {
+        info.primaries = attachmentPrimaries;
+    }
+    if (attachmentMatrix != AVCOL_SPC_UNSPECIFIED) {
+        info.matrix = attachmentMatrix;
+    }
+    attach.hdrFrameInfo = info;
+    fs_log_hdr_attachment_promotion_once(info);
 }
 
 - (instancetype)initWithCoder:(NSCoder *)coder
@@ -860,6 +987,7 @@ mp_format * mp_get_metal_format(uint32_t cvpixfmt);
 {
     //hold the attach as current.
     self.currentAttach = attach;
+    [self promoteHDRFrameInfoFromPixelBufferIfNeeded:attach];
     [self refreshDisplayConfigurationIfNeeded];
     [self refreshRenderIntentForAttach:attach];
     
