@@ -70,6 +70,18 @@ static const char *fs_hdr_matrix_name(FSYUV2RGBColorMatrixType matrixType)
     }
 }
 
+static const char *fs_hdr_tonemap_name(FSHDRToneMapMode toneMapMode)
+{
+    switch (toneMapMode) {
+        case FSHDRToneMapModeHable:
+            return "hable";
+        case FSHDRToneMapModeACES:
+            return "aces";
+        default:
+            return "bt2390";
+    }
+}
+
 static uint32_t fs_hdr_log_signature(FSHDRFrameInfo frameInfo,
                                      FSHDRRenderIntent renderIntent,
                                      FSMetalPipelineMeta *pipelineMeta)
@@ -78,8 +90,8 @@ static uint32_t fs_hdr_log_signature(FSHDRFrameInfo frameInfo,
     int headroomQInt = (int)(renderIntent.outputHeadroom * 100.0f + 0.5f);
     if (headroomQInt < 0) {
         headroomQInt = 0;
-    } else if (headroomQInt > 0x3ff) {
-        headroomQInt = 0x3ff;
+    } else if (headroomQInt > 0x1ff) {
+        headroomQInt = 0x1ff;
     }
     uint32_t headroomQ = (uint32_t)headroomQInt;
     signature |= (uint32_t)(frameInfo.content_type & 0x7);
@@ -90,9 +102,10 @@ static uint32_t fs_hdr_log_signature(FSHDRFrameInfo frameInfo,
     signature |= (uint32_t)(renderIntent.needsGamutMapping & 0x1) << 10;
     signature |= (uint32_t)(renderIntent.needsHDRDrawable & 0x1) << 11;
     signature |= (uint32_t)(pipelineMeta.convertMatrixType & 0x7) << 12;
-    signature |= (uint32_t)(frameInfo.dolby_vision.profile & 0x1f) << 16;
-    signature |= (uint32_t)(frameInfo.dolby_vision.has_mmr & 0x1) << 21;
-    signature |= (uint32_t)(headroomQ & 0x3ff) << 22;
+    signature |= (uint32_t)(renderIntent.toneMapMode & 0x3) << 15;
+    signature |= (uint32_t)(frameInfo.dolby_vision.profile & 0x1f) << 17;
+    signature |= (uint32_t)(frameInfo.dolby_vision.has_mmr & 0x1) << 22;
+    signature |= (uint32_t)(headroomQ & 0x1ff) << 23;
     return signature;
 }
 
@@ -293,14 +306,14 @@ static uint32_t fs_hdr_log_signature(FSHDRFrameInfo frameInfo,
             uint32_t signature = fs_hdr_log_signature(_hdrFrameInfo, _renderIntent, self.pipelineMeta);
             if (_hdrLogSignature != signature) {
                 _hdrLogSignature = signature;
-                ALOGI("hdr state: content=%s decode=%s dvProfile=%d mmr=%d shader=%d target=%s toneMap=%d gamut=%d hdrDrawable=%d matrix=%s headroom=%.2f sourceMax=%.1f targetMax=%.1f\n",
+                ALOGI("hdr state: content=%s decode=%s dvProfile=%d mmr=%d shader=%d target=%s toneMap=%s gamut=%d hdrDrawable=%d matrix=%s headroom=%.2f sourceMax=%.1f targetMax=%.1f\n",
                       fs_hdr_content_type_name(_hdrFrameInfo.content_type),
                       fs_hdr_decode_path_name(_hdrFrameInfo.decode_path),
                       _hdrFrameInfo.dolby_vision.profile,
                       _hdrFrameInfo.dolby_vision.has_mmr,
                       _renderIntent.useDolbyVisionShader,
                       fs_hdr_colorspace_name(_renderIntent.outputColorSpace),
-                      _renderIntent.needsToneMapping,
+                      fs_hdr_tonemap_name((FSHDRToneMapMode)_renderIntent.toneMapMode),
                       _renderIntent.needsGamutMapping,
                       _renderIntent.needsHDRDrawable,
                       fs_hdr_matrix_name(self.pipelineMeta.convertMatrixType),
