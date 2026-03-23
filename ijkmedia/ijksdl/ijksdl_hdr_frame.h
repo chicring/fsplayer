@@ -1,8 +1,6 @@
 #ifndef FSSDL__IJKSDL_HDR_FRAME_H
 #define FSSDL__IJKSDL_HDR_FRAME_H
 
-#include <stdint.h>
-
 #define FS_HDR_MAX_PIECES 8
 #define FS_HDR_COMPONENT_COUNT 3
 #define FS_HDR_MMR_MAX_ORDER 3

@@ -96,6 +96,10 @@ static float fs_hdr_pick_source_max_nits(const FSHDRFrameInfo *frameInfo)
         return kFSHDRDefaultSourceMaxNits;
     }
 
+    if (frameInfo->content_type == FS_HDR_CONTENT_TYPE_SDR) {
+        return kFSHDRDefaultSDRTargetMaxNits;
+    }
+
     if (frameInfo->dolby_vision.valid && frameInfo->dolby_vision.trim.has_level1 && frameInfo->dolby_vision.trim.max_pq > 0.0f) {
         return fs_hdr_pq_to_nits(frameInfo->dolby_vision.trim.max_pq);
     }
@@ -168,14 +172,11 @@ static float fs_hdr_pick_source_max_nits(const FSHDRFrameInfo *frameInfo)
     if (targetColorSpace != FSColorSpaceBT709 && !displayCaps.supportsExtendedRange) {
         targetColorSpace = FSColorSpaceBT709;
     }
-    if (!hdrInput && targetColorSpace != FSColorSpaceBT709) {
-        targetColorSpace = FSColorSpaceBT709;
-    }
 
     intent.outputColorSpace = targetColorSpace;
     intent.inputTransfer = fs_hdr_input_transfer(frameInfo);
     intent.outputTransfer = targetColorSpace == FSColorSpaceBT2100_PQ ? FSColorTransferFuncPQ : FSColorTransferFuncLINEAR;
-    intent.usesHDRPipeline = hdrInput;
+    intent.usesHDRPipeline = hdrInput || targetColorSpace != FSColorSpaceBT709;
     intent.isDolbyVision = frameInfo->content_type == FS_HDR_CONTENT_TYPE_DOLBY_VISION_LL;
     intent.useDolbyVisionShader = intent.isDolbyVision &&
                                   frameInfo->decode_path == FS_HDR_DECODE_PATH_FFMPEG_SOFTWARE &&
@@ -187,7 +188,7 @@ static float fs_hdr_pick_source_max_nits(const FSHDRFrameInfo *frameInfo)
                               (targetColorSpace == FSColorSpaceBT709 ||
                                (targetColorSpace == FSColorSpaceSCRGB && sourceMaxNits > scRGBTargetMaxNits));
     intent.needsGamutMapping = bt2020Input && targetColorSpace == FSColorSpaceBT709;
-    intent.needsHDRDrawable = hdrInput && targetColorSpace != FSColorSpaceBT709 && displayCaps.supportsExtendedRange;
+    intent.needsHDRDrawable = targetColorSpace != FSColorSpaceBT709 && displayCaps.supportsExtendedRange;
     intent.needsDithering = targetColorSpace == FSColorSpaceBT709;
     intent.toneMapMode = FSHDRToneMapModeBT2390;
     intent.sourceMinNits = fs_hdr_pick_source_min_nits(frameInfo);

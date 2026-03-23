@@ -7,6 +7,9 @@
 //
 
 #import <simd/simd.h>
+#if !defined(__METAL_VERSION__)
+#include <stdint.h>
+#endif
 #include "../../wrapper/apple/FSColorSpace.h"
 #include "../ijksdl_hdr_frame.h"
 
@@ -69,6 +72,7 @@ typedef struct {
     int valid;
     int contentType;
     int inputTransfer;
+    int sourceMatrixType;
     int outputColorSpace;
     int outputTransfer;
     int useDolbyVisionShader;

@@ -156,6 +156,7 @@ constant float kPQM2 = 78.84375;
 constant float kPQC1 = 0.8359375;
 constant float kPQC2 = 18.8515625;
 constant float kPQC3 = 18.6875;
+constant float kFSSDRReferenceWhiteNits = 100.0f;
 
 float fs_safe_div(float x, float y)
 {
@@ -278,6 +279,15 @@ float3 fs_bt2020_to_bt709_linear(float3 rgb)
     );
 }
 
+float3 fs_bt709_to_bt2020_linear(float3 rgb)
+{
+    return float3(
+        dot(rgb, float3(0.627409, 0.329260, 0.043272)),
+        dot(rgb, float3(0.069125, 0.919549, 0.011321)),
+        dot(rgb, float3(0.016423, 0.088048, 0.895617))
+    );
+}
+
 float3 fs_hpe_lms_to_bt2020_linear(float3 lms)
 {
     return float3(
@@ -350,11 +360,12 @@ float fs_eval_dolby_mmr(device const FSDolbyVisionReshapeComp *comp,
 float3 fs_dolby_reshape(float3 signal, device const FSDolbyVisionRenderParams *dv)
 {
     float3 sig = clamp(signal, 0.0f, 1.0f);
+    float3 sourceSig = sig;
 
     for (int c = 0; c < FS_HDR_COMPONENT_COUNT; c++) {
         device const FSDolbyVisionReshapeComp *comp = &dv->comp[c];
         int pieceCount = clamp(comp->num_pivots - 1, 0, FS_HDR_MAX_PIECES);
-        float s = sig[c];
+        float s = sourceSig[c];
         int pieceIndex = 0;
 
         if (pieceCount <= 0) {
@@ -370,7 +381,7 @@ float3 fs_dolby_reshape(float3 signal, device const FSDolbyVisionRenderParams *d
         }
 
         if (comp->method[pieceIndex] == FS_DV_RESHAPE_MMR) {
-            s = fs_eval_dolby_mmr(comp, pieceIndex, sig);
+            s = fs_eval_dolby_mmr(comp, pieceIndex, sourceSig);
         } else {
             float c0 = comp->poly_coef[pieceIndex][0];
             float c1 = comp->poly_coef[pieceIndex][1];
@@ -423,6 +434,30 @@ float4 yuv2rgb(float3 yuv, device FSConvertMatrix *convertMatrix, float x)
     float3 rgb = convertMatrix->colorMatrix * (yuv + convertMatrix->offset);
     float3 outColor = convertMatrix->hdr ? fs_legacy_hdr2sdr(rgb, x, convertMatrix->hdrPercentage, convertMatrix->transferFun) : rgb;
     return float4(rgb_adjust(outColor, convertMatrix->adjustment), 1.0f);
+}
+
+float3 fs_linearize_hdr_rgb(float3 rgb, int transfer);
+
+float3 fs_source_rgb_to_linear_bt2020(float3 encodedRgb,
+                                      device const FSHDRFragmentUniforms *hdrUniforms)
+{
+    if (hdrUniforms->contentType == FS_HDR_CONTENT_TYPE_SDR) {
+        float3 linear709 = fs_bt1886_eotf_vec(clamp(encodedRgb, 0.0f, 1.0f));
+        float3 linearBt2020 = linear709;
+        if (hdrUniforms->sourceMatrixType == FSYUV2RGBColorMatrixBT2020) {
+            linearBt2020 = linear709;
+        } else {
+            linearBt2020 = fs_bt709_to_bt2020_linear(linear709);
+        }
+        // Normalize SDR reference white into the same 10000-nit linear domain as PQ EOTF.
+        return linearBt2020 * (kFSSDRReferenceWhiteNits / 10000.0f);
+    }
+
+    if (hdrUniforms->useDolbyVisionShader && hdrUniforms->dolbyVision.valid) {
+        return fs_decode_dolby_vision_linear_bt2020(encodedRgb, hdrUniforms);
+    }
+
+    return fs_linearize_hdr_rgb(encodedRgb, hdrUniforms->inputTransfer);
 }
 
 float3 fs_linearize_hdr_rgb(float3 rgb, int transfer)
@@ -581,13 +616,9 @@ float4 fs_process_hdr_signal(float3 signal,
                              float2 texCoord,
                              float2 textureSize)
 {
-    float3 linearBt2020;
-    if (hdrUniforms->useDolbyVisionShader && hdrUniforms->dolbyVision.valid) {
-        linearBt2020 = fs_decode_dolby_vision_linear_bt2020(signal, hdrUniforms);
-    } else {
-        float3 encodedRgb = convertMatrix->colorMatrix * (signal + convertMatrix->offset);
-        linearBt2020 = fs_linearize_hdr_rgb(encodedRgb, hdrUniforms->inputTransfer);
-    }
+    float3 encodedRgb = convertMatrix->colorMatrix * (signal + convertMatrix->offset);
+    float3 linearBt2020 = fs_source_rgb_to_linear_bt2020(encodedRgb,
+                                                         hdrUniforms);
 
     float3 output = fs_encode_output_rgb(linearBt2020, hdrUniforms);
     output = rgb_adjust(output, convertMatrix->adjustment);
@@ -616,7 +647,9 @@ fragment float4 nv12FragmentShader(RasterizerData input [[stage_in]],
     float3 yuv = float3(textureY.sample(textureSampler,  input.textureCoordinate).r,
                         textureUV.sample(textureSampler, input.textureCoordinate).rg);
     device const FSHDRFragmentUniforms *hdrUniforms = fragmentShaderArgs.hdrUniforms;
-    if (hdrUniforms && hdrUniforms->valid && hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR) {
+    if (hdrUniforms && hdrUniforms->valid &&
+        (hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR ||
+         hdrUniforms->outputColorSpace != FSColorSpaceBT709)) {
         return fs_process_hdr_signal(yuv,
                                      fragmentShaderArgs.convertMatrix,
                                      hdrUniforms,
@@ -644,7 +677,9 @@ fragment float4 yuv420pFragmentShader(RasterizerData input [[stage_in]],
                         textureU.sample(textureSampler, input.textureCoordinate).r,
                         textureV.sample(textureSampler, input.textureCoordinate).r);
     device const FSHDRFragmentUniforms *hdrUniforms = fragmentShaderArgs.hdrUniforms;
-    if (hdrUniforms && hdrUniforms->valid && hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR) {
+    if (hdrUniforms && hdrUniforms->valid &&
+        (hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR ||
+         hdrUniforms->outputColorSpace != FSColorSpaceBT709)) {
         return fs_process_hdr_signal(yuv,
                                      fragmentShaderArgs.convertMatrix,
                                      hdrUniforms,
@@ -668,7 +703,9 @@ fragment float4 uyvy422FragmentShader(RasterizerData input [[stage_in]],
     float3 tc = textureY.sample(textureSampler, input.textureCoordinate).rgb;
     float3 yuv = float3(tc.g, tc.b, tc.r);
     device const FSHDRFragmentUniforms *hdrUniforms = fragmentShaderArgs.hdrUniforms;
-    if (hdrUniforms && hdrUniforms->valid && hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR) {
+    if (hdrUniforms && hdrUniforms->valid &&
+        (hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR ||
+         hdrUniforms->outputColorSpace != FSColorSpaceBT709)) {
         return fs_process_hdr_signal(yuv,
                                      fragmentShaderArgs.convertMatrix,
                                      hdrUniforms,
@@ -692,7 +729,9 @@ fragment float4 ayuvFragmentShader(RasterizerData input [[stage_in]],
     float4 tc = textureY.sample(textureSampler, input.textureCoordinate).rgba;
     float3 yuv = float3(tc.g, tc.b, tc.a);
     device const FSHDRFragmentUniforms *hdrUniforms = fragmentShaderArgs.hdrUniforms;
-    if (hdrUniforms && hdrUniforms->valid && hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR) {
+    if (hdrUniforms && hdrUniforms->valid &&
+        (hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR ||
+         hdrUniforms->outputColorSpace != FSColorSpaceBT709)) {
         return fs_process_hdr_signal(yuv,
                                      fragmentShaderArgs.convertMatrix,
                                      hdrUniforms,
@@ -717,8 +756,11 @@ fragment float4 bgraFragmentShader(RasterizerData input [[stage_in]],
     //color adjustment
     device FSConvertMatrix* convertMatrix = fragmentShaderArgs.convertMatrix;
     device const FSHDRFragmentUniforms *hdrUniforms = fragmentShaderArgs.hdrUniforms;
-    if (hdrUniforms && hdrUniforms->valid && hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR) {
-        float3 linearBt2020 = fs_linearize_hdr_rgb(rgba.rgb, hdrUniforms->inputTransfer);
+    if (hdrUniforms && hdrUniforms->valid &&
+        (hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR ||
+         hdrUniforms->outputColorSpace != FSColorSpaceBT709)) {
+        float3 linearBt2020 = fs_source_rgb_to_linear_bt2020(rgba.rgb,
+                                                             hdrUniforms);
         float3 output = fs_encode_output_rgb(linearBt2020, hdrUniforms);
         output = rgb_adjust(output, convertMatrix->adjustment);
         output = fs_apply_dithering(output,
@@ -748,8 +790,11 @@ fragment float4 argbFragmentShader(RasterizerData input [[stage_in]],
     //color adjustment
     device FSConvertMatrix* convertMatrix = fragmentShaderArgs.convertMatrix;
     device const FSHDRFragmentUniforms *hdrUniforms = fragmentShaderArgs.hdrUniforms;
-    if (hdrUniforms && hdrUniforms->valid && hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR) {
-        float3 linearBt2020 = fs_linearize_hdr_rgb(grab.gra, hdrUniforms->inputTransfer);
+    if (hdrUniforms && hdrUniforms->valid &&
+        (hdrUniforms->contentType != FS_HDR_CONTENT_TYPE_SDR ||
+         hdrUniforms->outputColorSpace != FSColorSpaceBT709)) {
+        float3 linearBt2020 = fs_source_rgb_to_linear_bt2020(grab.gra,
+                                                             hdrUniforms);
         float3 output = fs_encode_output_rgb(linearBt2020, hdrUniforms);
         output = rgb_adjust(output, convertMatrix->adjustment);
         output = fs_apply_dithering(output,

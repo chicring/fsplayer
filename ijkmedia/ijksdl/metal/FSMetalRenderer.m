@@ -310,6 +310,7 @@ static const NSUInteger kFSHDRUniformBufferSlots = 3;
         uniforms.valid = _hdrFrameInfo.valid;
         uniforms.contentType = _hdrFrameInfo.content_type;
         uniforms.inputTransfer = _renderIntent.inputTransfer;
+        uniforms.sourceMatrixType = self.pipelineMeta.convertMatrixType;
         uniforms.outputColorSpace = _renderIntent.outputColorSpace;
         uniforms.outputTransfer = _renderIntent.outputTransfer;
         uniforms.useDolbyVisionShader = _renderIntent.useDolbyVisionShader;

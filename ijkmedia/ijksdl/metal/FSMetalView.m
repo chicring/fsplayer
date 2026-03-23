@@ -44,6 +44,7 @@ typedef CGRect NSRect;
 @property (nonatomic, strong) FSHDRRenderPlanner *renderPlanner;
 @property (nonatomic, assign) FSHDRRenderIntent currentRenderIntent;
 @property (nonatomic, assign) FSColorSpace preferredColorSpace;
+@property (nonatomic, assign) NSUInteger displayIdentity;
 
 #if TARGET_OS_IOS || TARGET_OS_TV
 @property (atomic, assign) BOOL isEnterBackground;
@@ -116,6 +117,7 @@ typedef CGRect NSRect;
     self.enableSetNeedsDisplay = NO;
     self.paused = YES;
     [self refreshRenderIntentForAttach:nil];
+    self.displayIdentity = [self currentDisplayIdentity];
     //set default bg color.
     [self setBackgroundColor:0 g:0 b:0];
     
@@ -245,6 +247,30 @@ typedef CGRect NSRect;
                                                             displayCaps:[self currentDisplayCaps]];
     }
     [self applyRenderIntentConfiguration:self.currentRenderIntent];
+}
+
+- (NSUInteger)currentDisplayIdentity
+{
+#if TARGET_OS_IOS || TARGET_OS_TV
+    UIScreen *screen = self.window.screen ?: UIScreen.mainScreen;
+#else
+    NSScreen *screen = self.window.screen ?: NSScreen.mainScreen;
+#endif
+    return (NSUInteger)(__bridge void *)screen;
+}
+
+- (void)refreshDisplayConfigurationIfNeeded
+{
+    NSUInteger displayIdentity = [self currentDisplayIdentity];
+    if (self.displayIdentity == displayIdentity) {
+        return;
+    }
+    self.displayIdentity = displayIdentity;
+    [self refreshRenderIntentForAttach:self.currentAttach];
+    if (self.currentAttach) {
+        [self invalidatePipelines];
+        [self setNeedsRefreshCurrentPic];
+    }
 }
 
 - (instancetype)initWithCoder:(NSCoder *)coder
@@ -716,10 +742,17 @@ typedef CGRect NSRect;
 - (void)layoutSubviews
 {
     [super layoutSubviews];
+    [self refreshDisplayConfigurationIfNeeded];
     
     if (!CGSizeEqualToSize(self.drawableSize, self.preferredDrawableSize)) {
         [self setNeedsRefreshCurrentPic];
     }
+}
+
+- (void)didMoveToWindow
+{
+    [super didMoveToWindow];
+    [self refreshDisplayConfigurationIfNeeded];
 }
 
 #else
@@ -727,7 +760,14 @@ typedef CGRect NSRect;
 - (void)resizeWithOldSuperviewSize:(NSSize)oldSize
 {
     [super resizeWithOldSuperviewSize:oldSize];
+    [self refreshDisplayConfigurationIfNeeded];
     [self setNeedsRefreshCurrentPic];
+}
+
+- (void)viewDidMoveToWindow
+{
+    [super viewDidMoveToWindow];
+    [self refreshDisplayConfigurationIfNeeded];
 }
 
 #endif
@@ -803,6 +843,7 @@ mp_format * mp_get_metal_format(uint32_t cvpixfmt);
 {
     //hold the attach as current.
     self.currentAttach = attach;
+    [self refreshDisplayConfigurationIfNeeded];
     [self refreshRenderIntentForAttach:attach];
     
     if (!attach.videoPicture) {
