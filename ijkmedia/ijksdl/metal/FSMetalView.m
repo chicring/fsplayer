@@ -243,7 +243,8 @@ typedef CGRect NSRect;
 - (NSUInteger)currentDisplayConfigSignature
 {
     FSHDRDisplayCaps caps = [self currentDisplayCaps];
-    uint32_t headroomQ = (uint32_t)lrintf(fmaxf(caps.headroom, 1.0f) * 1000.0f);
+    float headroom = caps.headroom > 1.0f ? caps.headroom : 1.0f;
+    uint32_t headroomQ = (uint32_t)(headroom * 1000.0f + 0.5f);
     NSUInteger signature = 0;
     signature |= (NSUInteger)(caps.supportsExtendedRange & 0x1);
     signature |= (NSUInteger)(caps.supportsPQOutput & 0x1) << 1;
