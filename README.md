@@ -46,7 +46,7 @@
 - [x] 支持将画面同时渲染到多个 View 上
 - [x] 支持实时获取音频 PCM 数据
 - [x] 支持自定义渲染 View
-- [x] 支持 4K/HDR/HDR10/HDR10+/Dolby Vision
+- [x] 支持 4K/HDR/HDR10/HDR10+
 - [x] 智能识别 iso (blury、dvd、普通视频)
 - [x] mpegts 视频快进不花屏
 - [x] 支持网络协议播放 iso 镜像和 BDMV 文件夹
@@ -59,10 +59,6 @@
 - [x] 支持异步销毁，即使不调用 shutdown 也能正常销毁
 - [x] 支持设定播放器不管理 AudioSession 状态
 - [x] 优化播放器 View 旋转时的动画效果
-
-最近支持
-
-调研中
 
 - [ ] AV1 可以硬解，但个别视频会崩溃
 - [ ] 直播回放
