@@ -118,7 +118,7 @@ static int fs_hdr_avcol_primaries_from_cv_primaries(CFStringRef primaries)
     return AVCOL_PRI_UNSPECIFIED;
 }
 
-static void fs_log_hdr_attachment_promotion_once(FSHDRFrameInfo info)
+static void fs_log_hdr_attachment_reconcile_once(FSHDRFrameInfo info)
 {
     static uint32_t lastSignature = UINT_MAX;
     uint32_t signature = 0;
@@ -132,7 +132,7 @@ static void fs_log_hdr_attachment_promotion_once(FSHDRFrameInfo info)
     }
     lastSignature = signature;
 
-    ALOGI("hdr frame promoted from pixel buffer attachments: content=%d trc=%d primaries=%d matrix=%d\n",
+    ALOGI("hdr frame reconciled from pixel buffer attachments: content=%d trc=%d primaries=%d matrix=%d\n",
           info.content_type,
           info.transfer,
           info.primaries,
@@ -388,22 +388,17 @@ static void fs_log_hdr_attachment_promotion_once(FSHDRFrameInfo info)
     }
 
     FSHDRFrameInfo info = attach.hdrFrameInfo;
+    BOOL changed = NO;
     if (!info.valid) {
         info.valid = 1;
         info.content_type = FS_HDR_CONTENT_TYPE_SDR;
     }
-    if (info.content_type != FS_HDR_CONTENT_TYPE_SDR) {
-        return;
-    }
 
     CFStringRef transferFunction = CVBufferGetAttachment(attach.videoPicture, kCVImageBufferTransferFunctionKey, NULL);
-    int promotedContentType = fs_hdr_content_type_from_cv_transfer(transferFunction);
-    if (promotedContentType == FS_HDR_CONTENT_TYPE_SDR) {
-        return;
-    }
-
     CFStringRef colorMatrix = CVBufferGetAttachment(attach.videoPicture, kCVImageBufferYCbCrMatrixKey, NULL);
     CFStringRef colorPrimaries = CVBufferGetAttachment(attach.videoPicture, kCVImageBufferColorPrimariesKey, NULL);
+    int attachmentTransfer = fs_hdr_avcol_transfer_from_cv_transfer(transferFunction);
+    int attachmentContentType = fs_hdr_content_type_from_cv_transfer(transferFunction);
     int attachmentMatrix = fs_hdr_avcol_matrix_from_cv_matrix(colorMatrix);
     int attachmentPrimaries = fs_hdr_avcol_primaries_from_cv_primaries(colorPrimaries);
     BOOL isBT2020 = info.primaries == AVCOL_PRI_BT2020 ||
@@ -412,20 +407,44 @@ static void fs_log_hdr_attachment_promotion_once(FSHDRFrameInfo info)
                     attachmentPrimaries == AVCOL_PRI_BT2020 ||
                     attachmentMatrix == AVCOL_SPC_BT2020_NCL ||
                     attachmentMatrix == AVCOL_SPC_BT2020_CL;
-    if (!isBT2020) {
+    BOOL canPromoteHDR = attachmentContentType != FS_HDR_CONTENT_TYPE_SDR && isBT2020;
+
+    if (info.content_type == FS_HDR_CONTENT_TYPE_SDR &&
+        !canPromoteHDR) {
         return;
     }
 
-    info.content_type = promotedContentType;
-    info.transfer = fs_hdr_avcol_transfer_from_cv_transfer(transferFunction);
-    if (attachmentPrimaries != AVCOL_PRI_UNSPECIFIED) {
-        info.primaries = attachmentPrimaries;
+    if (info.content_type == FS_HDR_CONTENT_TYPE_SDR &&
+        canPromoteHDR) {
+        info.content_type = attachmentContentType;
+        changed = YES;
+        if (attachmentTransfer != AVCOL_TRC_UNSPECIFIED) {
+            info.transfer = attachmentTransfer;
+        }
     }
-    if (attachmentMatrix != AVCOL_SPC_UNSPECIFIED) {
+
+    if (info.transfer == AVCOL_TRC_UNSPECIFIED &&
+        attachmentTransfer != AVCOL_TRC_UNSPECIFIED &&
+        info.content_type != FS_HDR_CONTENT_TYPE_SDR) {
+        info.transfer = attachmentTransfer;
+        changed = YES;
+    }
+    if (info.primaries == AVCOL_PRI_UNSPECIFIED &&
+        attachmentPrimaries != AVCOL_PRI_UNSPECIFIED) {
+        info.primaries = attachmentPrimaries;
+        changed = YES;
+    }
+    if (info.matrix == AVCOL_SPC_UNSPECIFIED &&
+        attachmentMatrix != AVCOL_SPC_UNSPECIFIED) {
         info.matrix = attachmentMatrix;
+        changed = YES;
+    }
+
+    if (!changed) {
+        return;
     }
     attach.hdrFrameInfo = info;
-    fs_log_hdr_attachment_promotion_once(info);
+    fs_log_hdr_attachment_reconcile_once(info);
 }
 
 - (instancetype)initWithCoder:(NSCoder *)coder
