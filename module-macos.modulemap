@@ -1,6 +1,8 @@
 framework module FSPlayer {
   umbrella header "FSPlayerKit.h"
   header "FSPlayerDef.h"
+  header "FSColorSpace.h"
+  header "ijksdl_hdr_frame.h"
 
   export *
   module * { export * }

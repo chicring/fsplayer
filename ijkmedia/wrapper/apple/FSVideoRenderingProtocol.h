@@ -36,10 +36,10 @@ typedef NSView UIView;
 #else
 #import <UIKit/UIKit.h>
 #endif
-#if __has_include("FSColorSpace.h")
-#import "FSColorSpace.h"
-#elif __has_include(<FSPlayer/FSColorSpace.h>)
+#if __has_include(<FSPlayer/FSColorSpace.h>)
 #import <FSPlayer/FSColorSpace.h>
+#elif __has_include("FSColorSpace.h")
+#import "FSColorSpace.h"
 #elif __has_include("wrapper/apple/FSColorSpace.h")
 #import "wrapper/apple/FSColorSpace.h"
 #elif __has_include(<FSColorSpace.h>)

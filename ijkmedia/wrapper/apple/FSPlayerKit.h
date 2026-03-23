@@ -30,7 +30,20 @@
 #import <AppKit/AppKit.h>
 #endif
 
-#if __has_include("FSMediaPlayback.h")
+#if __has_include(<FSPlayer/FSMediaPlayback.h>)
+#import <FSPlayer/FSMediaPlayback.h>
+#import <FSPlayer/FSMonitor.h>
+#import <FSPlayer/FSColorSpace.h>
+#import <FSPlayer/FSOptions.h>
+#import <FSPlayer/FSPlayer.h>
+#import <FSPlayer/FSMediaModule.h>
+#import <FSPlayer/FSNotificationManager.h>
+#import <FSPlayer/FSKVOController.h>
+#import <FSPlayer/FSVideoRenderingProtocol.h>
+#import <FSPlayer/FSVideoRenderView.h>
+#import <FSPlayer/FSAudioRenderingProtocol.h>
+#import <FSPlayer/FSAudioRendering.h>
+#elif __has_include("FSMediaPlayback.h")
 #import "FSMediaPlayback.h"
 #import "FSMonitor.h"
 #import "FSColorSpace.h"
@@ -44,17 +57,6 @@
 #import "FSAudioRenderingProtocol.h"
 #import "FSAudioRendering.h"
 #else
-#import <FSPlayer/FSMediaPlayback.h>
-#import <FSPlayer/FSMonitor.h>
-#import <FSPlayer/FSColorSpace.h>
-#import <FSPlayer/FSOptions.h>
-#import <FSPlayer/FSPlayer.h>
-#import <FSPlayer/FSMediaModule.h>
-#import <FSPlayer/FSNotificationManager.h>
-#import <FSPlayer/FSKVOController.h>
-#import <FSPlayer/FSVideoRenderingProtocol.h>
-#import <FSPlayer/FSVideoRenderView.h>
-#import <FSPlayer/FSAudioRenderingProtocol.h>
-#import <FSPlayer/FSAudioRendering.h>
+#error "FSPlayer public headers not found"
 #endif
 #endif /* FSPlayerKit_h */
