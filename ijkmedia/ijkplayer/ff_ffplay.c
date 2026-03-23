@@ -1326,6 +1326,14 @@ static void fs_log_hdr_frame_info(const FSHDRFrameInfo *info)
           info->max_fall);
 }
 
+static void fs_clear_dolby_vision_metadata(FSHDRFrameInfo *info)
+{
+    if (!info) {
+        return;
+    }
+    memset(&info->dolby_vision, 0, sizeof(info->dolby_vision));
+}
+
 static void fs_fill_mastering_display_metadata(const AVFrame *frame, FSHDRFrameInfo *info)
 {
     AVFrameSideData *metadata_sd = av_frame_get_side_data((AVFrame *)frame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
@@ -1562,10 +1570,13 @@ static void fs_fill_hdr_frame_info(const AVFrame *frame, FSHDRFrameInfo *info)
     if (info->dolby_vision.valid && info->dolby_vision.profile == 5) {
         info->content_type = FS_HDR_CONTENT_TYPE_DOLBY_VISION_LL;
     } else if (info->dolby_vision.valid) {
+        int profile = info->dolby_vision.profile;
+        int level = info->dolby_vision.level;
         ALOGW("DOVI metadata parsed on %s path, profile=%d level=%d; falling back to non-DV render path\n",
               fs_hdr_decode_path_name(info->decode_path),
-              info->dolby_vision.profile,
-              info->dolby_vision.level);
+              profile,
+              level);
+        fs_clear_dolby_vision_metadata(info);
         if (frame->color_trc == AVCOL_TRC_SMPTE2084) {
             info->content_type = FS_HDR_CONTENT_TYPE_HDR10;
         } else if (frame->color_trc == AVCOL_TRC_ARIB_STD_B67) {
