@@ -582,6 +582,7 @@ typedef struct FFPlayer {
     
     float       pf_playback_rate;
     int         pf_playback_rate_changed;
+    int         pf_playback_rate_need_flush_audio;
     float       pf_playback_volume;
     int         pf_playback_volume_changed;
 
@@ -749,6 +750,7 @@ inline static void ffp_reset_internal(FFPlayer *ffp)
     /* filters */
     ffp->pf_playback_rate               = 1.0f;
     ffp->pf_playback_rate_changed       = 0;
+    ffp->pf_playback_rate_need_flush_audio = 0;
     ffp->pf_playback_volume             = 1.0f;
     ffp->pf_playback_volume_changed     = 0;
 

@@ -3178,6 +3178,27 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
 
     if (ffp->pf_playback_rate_changed) {
         ffp->pf_playback_rate_changed = 0;
+        if (ffp->pf_playback_rate_need_flush_audio) {
+            // Drop queued renderer audio and decoded samples to avoid stale-tail lag after rapid speed switches.
+            int dropped_frames = 0;
+            int max_drops = SAMPLE_QUEUE_SIZE + 4;
+            while (max_drops-- > 0 && frame_queue_nb_remaining(&is->sampq) > 0) {
+                Frame *af = frame_queue_peek_readable_noblock(&is->sampq);
+                if (!af) {
+                    break;
+                }
+                frame_queue_next(&is->sampq);
+                dropped_frames++;
+            }
+            is->audio_buf = NULL;
+            is->audio_buf_index = 0;
+            is->audio_buf_size = 0;
+            av_log(ffp, AV_LOG_INFO,
+                   "flush audio queue on playback rate change: rate=%0.3f droppedSampleFrames=%d\n",
+                   ffp->pf_playback_rate, dropped_frames);
+            SDL_AoutFlushAudio(ffp->aout);
+            ffp->pf_playback_rate_need_flush_audio = 0;
+        }
 #if defined(__ANDROID__)
         if (!ffp->soundtouch_enable) {
             SDL_AoutSetPlaybackRate(ffp->aout, ffp->pf_playback_rate);
@@ -3278,13 +3299,31 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
                 int auto_drop = (is->step || get_clock_extral_delay(&is->audclk) == 0) && !isnan(video_pts) && diff > threshold;
                 if (auto_drop) {
                     av_log(NULL, AV_LOG_INFO, "audio pts is behind,need fast forwad,diff:%f\n", diff);
-                    int counter = 3;
-                    while (counter--) {
-                        if (diff >= 0.01) {
-                            diff = consume_audio_buffer(ffp, diff);
-                        } else {
+                    double target_residual = FFMAX(0.005, threshold * 0.5);
+                    if (ffp->pf_playback_rate >= 2.0f) {
+                        target_residual = FFMAX(0.005, threshold * 0.25);
+                    }
+                    int max_rounds = 6;
+                    if (ffp->pf_playback_rate >= 2.0f) {
+                        max_rounds = 24;
+                    } else if (ffp->pf_playback_rate >= 1.25f || diff >= 0.40) {
+                        max_rounds = 16;
+                    } else if (diff >= 0.20) {
+                        max_rounds = 10;
+                    }
+                    int rounds = 0;
+                    while (max_rounds-- > 0 && diff >= target_residual) {
+                        double before = diff;
+                        diff = consume_audio_buffer(ffp, diff);
+                        rounds++;
+                        if (before - diff < 0.001) {
                             break;
                         }
+                    }
+                    if (rounds > 3 || diff >= target_residual) {
+                        av_log(NULL, AV_LOG_INFO,
+                               "audio catchup rounds=%d remain=%f target=%f rate=%0.3f\n",
+                               rounds, diff, target_residual, ffp->pf_playback_rate);
                     }
                     SDL_AoutFlushAudio(ffp->aout);
                     update_sample_display(ffp, NULL, -1);
@@ -5609,9 +5648,13 @@ void ffp_set_playback_rate(FFPlayer *ffp, float rate)
     if (!ffp)
         return;
 
+    float previous_rate = ffp->pf_playback_rate;
     av_log(ffp, AV_LOG_INFO, "Playback rate: %f\n", rate);
     ffp->pf_playback_rate = rate;
     ffp->pf_playback_rate_changed = 1;
+    if (fabsf(previous_rate - rate) > 0.001f) {
+        ffp->pf_playback_rate_need_flush_audio = 1;
+    }
 }
 
 void ffp_set_playback_volume(FFPlayer *ffp, float volume)
