@@ -81,6 +81,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic) BOOL automaticallySetupAudioSession;
 //default is 0, when the value is 0, it is not turned on.
 @property(nonatomic) NSTimeInterval currentPlaybackTimeNotificationInterval API_AVAILABLE(macosx(10.12), ios(10.0), watchos(3.0), tvos(10.0));
+@property(nonatomic) NSInteger runtimeMaxFPS;
+@property(nonatomic) NSInteger runtimeFrameDrop;
+@property(nonatomic) NSInteger runtimeVideoPictQueueSize;
 // mdk-compatible public output target. Default stays BT709 so normal playback
 // does not implicitly switch to HDR output.
 @property(nonatomic) FSColorSpace colorSpace;
