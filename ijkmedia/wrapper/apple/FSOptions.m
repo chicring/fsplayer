@@ -38,12 +38,9 @@
 {
     FSOptions *options = [[FSOptions alloc] init];
 
-    options.runtimeMaxFPS = 30;
-    options.runtimeFrameDrop = 0;
-    options.runtimeVideoPictQueueSize = 3;
-    [options setPlayerOptionIntValue:options.runtimeMaxFPS forKey:@"max-fps"];
-    [options setPlayerOptionIntValue:options.runtimeFrameDrop forKey:@"framedrop"];
-    [options setPlayerOptionIntValue:options.runtimeVideoPictQueueSize forKey:@"video-pictq-size"];
+    [options setPlayerOptionIntValue:30     forKey:@"max-fps"];
+    [options setPlayerOptionIntValue:0      forKey:@"framedrop"];
+    [options setPlayerOptionIntValue:3      forKey:@"video-pictq-size"];
     
     [options setFormatOptionIntValue:0                  forKey:@"auto_convert"];
     [options setFormatOptionIntValue:1                  forKey:@"reconnect"];

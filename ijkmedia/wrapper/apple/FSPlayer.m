@@ -295,9 +295,6 @@ NSErrorDomain const FSTransmuxerErrorDomain = @"com.fsplayer.transmuxer";
 #endif
     int _enableAccurateSeek;
     BOOL _canUpdateAccurateSeek;
-    NSInteger _runtimeMaxFPS;
-    NSInteger _runtimeFrameDrop;
-    NSInteger _runtimeVideoPictQueueSize;
     
     __weak NSTimer *_playbackTimeNotifiTimer;
     NSTimeInterval _playbackTimeNotifiInterval;
@@ -421,9 +418,6 @@ static void FSPlayerSafeDestroy(FSPlayer *player) {
     _scalingMode = FSScalingModeAspectFit;
     _shouldAutoplay = YES;
     _canUpdateAccurateSeek = YES;
-    _runtimeMaxFPS = MAX((NSInteger)1, options.runtimeMaxFPS);
-    _runtimeFrameDrop = MAX((NSInteger)0, options.runtimeFrameDrop);
-    _runtimeVideoPictQueueSize = MAX((NSInteger)1, options.runtimeVideoPictQueueSize);
     if (@available(macOS 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *)) {
         _playbackTimeNotifiInterval = options.currentPlaybackTimeNotificationInterval;
     }
@@ -1502,24 +1496,20 @@ inline static NSString *formatedSpeed(int64_t bytes, int64_t elapsed_milli) {
     if (!_mediaPlayer)
         return;
 
-    int64_t framedrop = MAX((NSInteger)0, _runtimeFrameDrop);
-    int64_t pictq = MAX((NSInteger)1, _runtimeVideoPictQueueSize);
-    int64_t maxFps = MAX((NSInteger)1, _runtimeMaxFPS);
-
-    // Runtime tuning for speed playback without changing configured baselines.
+    // Runtime tuning for speed playback without changing global defaults.
     if (playbackRate >= 2.0f) {
-        framedrop = MAX(framedrop, (int64_t)2);
-        pictq = MAX(pictq, (int64_t)6);
-        maxFps = MAX(maxFps, (int64_t)60);
+        ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "framedrop", 2);
+        ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "video-pictq-size", 6);
+        ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "max-fps", 60);
     } else if (playbackRate >= 1.25f) {
-        framedrop = MAX(framedrop, (int64_t)1);
-        pictq = MAX(pictq, (int64_t)5);
-        maxFps = MAX(maxFps, (int64_t)45);
+        ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "framedrop", 1);
+        ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "video-pictq-size", 5);
+        ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "max-fps", 45);
+    } else {
+        ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "framedrop", 0);
+        ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "video-pictq-size", 3);
+        ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "max-fps", 30);
     }
-
-    ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "framedrop", framedrop);
-    ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "video-pictq-size", pictq);
-    ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "max-fps", maxFps);
 
     return ijkmp_set_playback_rate(_mediaPlayer, playbackRate);
 }
