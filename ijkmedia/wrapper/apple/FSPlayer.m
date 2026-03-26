@@ -1496,17 +1496,6 @@ inline static NSString *formatedSpeed(int64_t bytes, int64_t elapsed_milli) {
     if (!_mediaPlayer)
         return;
 
-    // Runtime tuning for high-speed playback without changing global defaults.
-    if (playbackRate >= 2.0f) {
-        ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "framedrop", 2);
-        ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "video-pictq-size", 6);
-        ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "max-fps", 60);
-    } else {
-        ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "framedrop", 0);
-        ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "video-pictq-size", 3);
-        ijkmp_set_option_int(_mediaPlayer, FSMP_OPT_CATEGORY_PLAYER, "max-fps", 30);
-    }
-
     return ijkmp_set_playback_rate(_mediaPlayer, playbackRate);
 }
 
