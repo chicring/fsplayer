@@ -4932,21 +4932,13 @@ FFPlayer *ffp_create(void)
         return NULL;
 
     msg_queue_init(&ffp->msg_queue);
-    ffp_reset_internal(ffp);
 #if CONFIG_AUDIO_AVFILTER
     ffp->af_mutex = SDL_CreateMutex();
-    if (!ffp->af_mutex) {
-        av_log(NULL, AV_LOG_ERROR, "ffp_create: failed to create af_mutex\n");
-        goto fail;
-    }
 #endif
 #if CONFIG_VIDEO_AVFILTER
     ffp->vf_mutex = SDL_CreateMutex();
-    if (!ffp->vf_mutex) {
-        av_log(NULL, AV_LOG_ERROR, "ffp_create: failed to create vf_mutex\n");
-        goto fail;
-    }
 #endif
+    ffp_reset_internal(ffp);
     ffp->av_class = &ffp_context_class;
     ffp->meta = ijkmeta_create();
 
@@ -4956,17 +4948,6 @@ FFPlayer *ffp_create(void)
 
     ffp->audio_samples_callback = NULL;
     return ffp;
-
-fail:
-#if CONFIG_VIDEO_AVFILTER
-    SDL_DestroyMutexP(&ffp->vf_mutex);
-#endif
-#if CONFIG_AUDIO_AVFILTER
-    SDL_DestroyMutexP(&ffp->af_mutex);
-#endif
-    msg_queue_destroy(&ffp->msg_queue);
-    av_free(ffp);
-    return NULL;
 }
 
 void ffp_destroy(FFPlayer *ffp)
