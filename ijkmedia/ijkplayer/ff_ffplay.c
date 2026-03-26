@@ -5652,13 +5652,6 @@ void ffp_set_playback_rate(FFPlayer *ffp, float rate)
     float previous_rate = ffp->pf_playback_rate;
     av_log(ffp, AV_LOG_INFO, "Playback rate: %f\n", rate);
     ffp->pf_playback_rate = rate;
-    if (ffp->is) {
-        set_clock_speed(&ffp->is->audclk, rate);
-        set_clock_speed(&ffp->is->extclk, rate);
-        av_log(ffp, AV_LOG_INFO,
-               "playback rate updates clock speed: rate=%0.3f audclk=%0.3f extclk=%0.3f\n",
-               rate, ffp->is->audclk.speed, ffp->is->extclk.speed);
-    }
     ffp->pf_playback_rate_changed = 1;
     if (fabsf(previous_rate - rate) > 0.001f) {
         ffp->pf_playback_rate_need_flush_audio = 1;
