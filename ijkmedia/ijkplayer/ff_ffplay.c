@@ -2320,7 +2320,6 @@ static int configure_video_filters(FFPlayer *ffp, AVFilterGraph *graph, VideoSta
         }
     }
 
-#ifdef FFP_AVFILTER_PLAYBACK_RATE
     if (fabsf(ffp->pf_playback_rate) > 0.00001 &&
         fabsf(ffp->pf_playback_rate - 1.0f) > 0.00001) {
         char setpts_buf[256];
@@ -2330,7 +2329,6 @@ static int configure_video_filters(FFPlayer *ffp, AVFilterGraph *graph, VideoSta
         snprintf(setpts_buf, sizeof(setpts_buf), "%f*PTS", rate);
         INSERT_FILT("setpts", setpts_buf);
     }
-#endif
 
     if ((ret = configure_filtergraph(graph, vfilters, filt_src, last_filter)) < 0)
         goto fail;
@@ -5657,6 +5655,17 @@ void ffp_set_playback_rate(FFPlayer *ffp, float rate)
     ffp->pf_playback_rate_changed = 1;
     if (fabsf(previous_rate - rate) > 0.001f) {
         ffp->pf_playback_rate_need_flush_audio = 1;
+#if CONFIG_VIDEO_AVFILTER
+        if (ffp->vf_mutex) {
+            SDL_LockMutex(ffp->vf_mutex);
+            ffp->vf_changed = 1;
+            SDL_UnlockMutex(ffp->vf_mutex);
+        } else {
+            ffp->vf_changed = 1;
+        }
+        av_log(ffp, AV_LOG_INFO, "playback rate change triggers video filter rebuild: previous=%0.3f current=%0.3f\n",
+               previous_rate, rate);
+#endif
     }
 }
 
