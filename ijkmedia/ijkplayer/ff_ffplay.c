@@ -878,12 +878,9 @@ static double compute_target_delay(FFPlayer *ffp, double delay, VideoState *is)
                 delay = 2 * delay;
         }
     }
-    if (!is->step && !is->step_on_seeking && !is->audio_accurate_seek_req &&
-        fabsf(ffp->pf_playback_rate) > 0.00001f &&
-        fabsf(ffp->pf_playback_rate - 1.0f) > 0.00001f) {
-        // Apply rate directly to video display cadence as well.
-        // Without this, audio rate can change first while video cadence still looks near 1x.
-        delay = FFMAX(0, delay / ffp->pf_playback_rate);
+    //for only video stream movie,using playbackRate speed play.
+    else if (fabsf(ffp->pf_playback_rate) > 0.00001){
+        delay = delay / ffp->pf_playback_rate;
     }
 
     if (ffp) {
